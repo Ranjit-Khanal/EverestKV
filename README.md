@@ -51,6 +51,26 @@ It focuses on clarity, simplicity, and understanding systems fundamentals rather
 
 ---
 
-##  Status
+## Project layout
 
-🚧 Early development (core KV engine in progress)
+Following the [standard Go project layout](https://github.com/golang-standards/project-layout):
+
+| Path | Purpose |
+|------|---------|
+| `cmd/everestkv/` | Server entrypoint |
+| `internal/server/` | TCP server and command dispatch |
+| `pkg/resp/` | RESP2 protocol parser and writer |
+
+## Run
+
+```bash
+go run ./cmd/everestkv
+# or
+go build -o bin/everestkv ./cmd/everestkv && ./bin/everestkv
+```
+
+Connect with `redis-cli` or any RESP2 client on port `6379`. Supported commands: `PING`, `ECHO`, `QUIT`.
+
+## Status
+
+🚧 Early development (RESP parser and server skeleton in place; KV engine next)
