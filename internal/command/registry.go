@@ -21,7 +21,7 @@ var Registry = map[string]Handler{
 	"ECHO": echo,
 	"GET":  get,
 	"SET":  set,
-	"QUIT": quit,
+	"EXIT": exit,
 }
 
 // Dispatch looks up cmd and runs it. Unknown commands return a RESP error.

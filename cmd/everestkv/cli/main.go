@@ -19,7 +19,8 @@ func main() {
 	defer conn.Close()
 
 	fmt.Println("Connected to EverestKv at localhost:6379")
-	fmt.Println("Type your commands (e.g., PING, ECHO hello, QUIT)")
+	fmt.Printf("Type your commands (e.g., %s, %s hello, %s) or %s to leave\n",
+		CommandPing, CommandEcho, CommandQuit, CommandExit)
 
 	// Read from stdin and send to server
 	scanner := bufio.NewScanner(os.Stdin)
@@ -32,7 +33,7 @@ func main() {
 		if line == "" {
 			continue
 		}
-		if strings.ToUpper(line) == "QUIT" {
+		if Command(strings.ToUpper(line)) == CommandExit {
 			fmt.Println("Bye!")
 			return
 		}

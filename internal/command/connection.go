@@ -16,7 +16,7 @@ func echo(_ *store.Store, args []string, w *resp.Writer) error {
 	return w.WriteBulkString(args[0])
 }
 
-func quit(_ *store.Store, _ []string, w *resp.Writer) error {
+func exit(_ *store.Store, _ []string, w *resp.Writer) error {
 	if err := w.WriteSimpleString("OK"); err != nil {
 		return err
 	}
