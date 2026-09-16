@@ -6,12 +6,11 @@ import (
 	"io"
 	"log"
 	"net"
-	"strings"
 
+	"github.com/Ranjit-Khanal/everestkv/internal/command"
+	"github.com/Ranjit-Khanal/everestkv/internal/store"
 	"github.com/Ranjit-Khanal/everestkv/pkg/resp"
 )
-
-var errClose = errors.New("connection closed")
 
 // Config holds server listen options.
 type Config struct {
@@ -25,12 +24,16 @@ func DefaultConfig() Config {
 
 // Server is a TCP server that speaks RESP2.
 type Server struct {
-	cfg Config
+	cfg   Config
+	store *store.Store
 }
 
-// New returns a Server with the given config.
+// New returns a Server with the given config and an empty in-memory store.
 func New(cfg Config) *Server {
-	return &Server{cfg: cfg}
+	return &Server{
+		cfg:   cfg,
+		store: store.New(),
+	}
 }
 
 // ListenAndServe accepts connections until an error occurs.
@@ -69,7 +72,7 @@ func (s *Server) serveConn(conn net.Conn) {
 		}
 
 		if err := s.dispatch(writer, v); err != nil {
-			if !errors.Is(err, errClose) {
+			if !errors.Is(err, command.ErrQuit) {
 				log.Printf("dispatch error from %s: %v", conn.RemoteAddr(), err)
 			}
 			return
@@ -82,21 +85,5 @@ func (s *Server) dispatch(w *resp.Writer, v resp.Value) error {
 	if err != nil {
 		return w.WriteError(fmt.Sprintf("ERR %v", err))
 	}
-
-	switch strings.ToUpper(cmd) {
-	case "PING":
-		return w.WriteSimpleString("PONG")
-	case "ECHO":
-		if len(args) != 1 {
-			return w.WriteError("ERR wrong number of arguments for 'echo' command")
-		}
-		return w.WriteBulkString(args[0])
-	case "QUIT":
-		if err := w.WriteSimpleString("OK"); err != nil {
-			return err
-		}
-		return errClose
-	default:
-		return w.WriteError(fmt.Sprintf("ERR unknown command '%s'", strings.ToLower(cmd)))
-	}
+	return command.Dispatch(s.store, cmd, args, w)
 }

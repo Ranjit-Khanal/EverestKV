@@ -43,15 +43,16 @@ Requires a recent Go toolchain (see `go.mod`).
 | Layer | Owns | Must not own |
 |-------|------|----------------|
 | `cmd/*` | Wiring `main` | Business logic |
-| `internal/server` | Connections, dispatch | Wire encoding details beyond calling `pkg/resp` |
+| `internal/server` | Connections, session loop | Command implementations |
+| `internal/command` | Handlers + registry | TCP accept loop |
 | `pkg/resp` | RESP parse/encode | Commands, storage |
-| `internal/store` *(planned)* | Keys, values, TTL, durability | TCP or RESP |
+| `internal/store` | Keys, values, TTL, durability | TCP or RESP |
 
 When adding a command:
 
-1. Parse via existing RESP types.
-2. Dispatch in `internal/server` (or a dedicated command package under `internal/` if it grows).
-3. Mutate/query state only through the store API once it exists.
+1. Parse via existing RESP types (server already does this).
+2. Add a handler under `internal/command/` and register it in `Registry`.
+3. Mutate/query state only through the store API.
 4. Reply with the correct RESP type (`+`, `-`, `$`, `:`, `*`).
 
 ## Code style

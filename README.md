@@ -28,22 +28,29 @@ Client (everestkv-cli / redis-cli)
 └───────────────┬───────────────┘
                 ▼
 ┌───────────────────────────────┐
-│  internal/server              │  accept, session, command dispatch
+│  internal/server              │  accept, session loop
 └───────────────┬───────────────┘
                 ▼
 ┌───────────────────────────────┐
-│  pkg/resp                     │  RESP2 parser & writer
-└───────────────────────────────┘
+│  internal/command             │  registry + handlers (GET, SET, …)
+└───────┬───────────────┬───────┘
+        │               │
+        ▼               ▼
+┌───────────────┐ ┌─────────────────┐
+│  pkg/resp     │ │ internal/store  │
+│  parse/write  │ │ in-memory map   │
+└───────────────┘ └─────────────────┘
 
-  planned: internal/store       │  in-memory KV, TTL, persistence
+  planned on store: TTL / eviction / persistence
 ```
 
 **Layers**
 
 1. **Transport** — TCP listen/accept; one goroutine per connection.
 2. **Protocol** — `pkg/resp` turns the byte stream into values and back.
-3. **Application** — `internal/server` maps commands (`PING`, `ECHO`, …) to replies.
-4. **Storage** *(next)* — private engine under `internal/`; handlers call into it, protocol stays unchanged.
+3. **Commands** — `internal/command` maps names to handlers; add new commands here.
+4. **Storage** — `internal/store` holds keys/values behind a `RWMutex`.
+5. **Server** — `internal/server` only owns connections and calls `command.Dispatch`.
 
 Layout follows [golang-standards/project-layout](https://github.com/golang-standards/project-layout): `cmd/` for binaries, `internal/` for private app code, `pkg/` for reusable libraries.
 
@@ -52,20 +59,20 @@ Layout follows [golang-standards/project-layout](https://github.com/golang-stand
 ```
 cmd/everestkv/          Server entrypoint
 cmd/everestkv/cli/      Interactive RESP client
-internal/server/        TCP server + command dispatch
+internal/server/        TCP accept + session loop
+internal/command/       Command registry and handlers
+internal/store/         In-memory key-value engine
 pkg/resp/               RESP2 encode/decode
 Makefile                build / run targets
 ```
 
 ## Status
 
-Early skeleton:
-
 - RESP2 parser and writer
-- TCP server with `PING`, `ECHO`, `QUIT`
-- Interactive CLI
+- TCP server + interactive CLI
+- In-memory store with `GET` / `SET`
 
-Next: in-memory store and `GET` / `SET` / `DEL`.
+Next: `DEL`, TTL, persistence.
 
 ## Build & run
 
@@ -76,7 +83,7 @@ make run-cli        # interactive client (server must be up)
 make clean
 ```
 
-Supported commands today: `PING`, `ECHO <msg>`, `QUIT`.
+Supported commands today: `PING`, `ECHO <msg>`, `GET <key>`, `SET <key> <value>`, `QUIT`.
 
 You can also use `redis-cli` against `:6379` for the same commands.
 
