@@ -21,6 +21,7 @@ var Registry = map[string]Handler{
 	"ECHO": echo,
 	"GET":  get,
 	"SET":  set,
+	"KEYS": keys,
 	"EXIT": exit,
 }
 

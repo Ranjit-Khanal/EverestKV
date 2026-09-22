@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>EverestKV Dashboard</title>
+<link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark">⛰</span>
+      <span class="brand-name">EverestKV</span>
+    </div>
+    <div class="status" id="status">
+      <span class="dot" id="status-dot"></span>
+      <span id="status-text">connecting…</span>
+    </div>
+  </header>
+
+  <main class="layout">
+    <section class="panel">
+      <h2>Key / Value</h2>
+      <p class="hint">GET and SET run against the live store, exactly like the CLI.</p>
+
+      <form id="get-form" class="row">
+        <input id="get-key" type="text" placeholder="key" autocomplete="off" required />
+        <button type="submit">GET</button>
+      </form>
+      <div class="result" id="get-result"></div>
+
+      <form id="set-form" class="row">
+        <input id="set-key" type="text" placeholder="key" autocomplete="off" required />
+        <input id="set-value" type="text" placeholder="value" autocomplete="off" required />
+        <button type="submit">SET</button>
+      </form>
+      <div class="result" id="set-result"></div>
+    </section>
+
+    <section class="panel keys-panel">
+      <div class="panel-head">
+        <h2>Stored Keys</h2>
+        <button type="button" id="keys-refresh">Refresh</button>
+      </div>
+      <p class="hint">Every key currently in the store (<code>KEYS *</code>), same as running it from the CLI.</p>
+      <table class="keys-table">
+        <thead><tr><th>Key</th><th>Value</th></tr></thead>
+        <tbody id="keys-body"></tbody>
+      </table>
+      <p class="hint" id="keys-empty" hidden>No keys yet — set one above.</p>
+    </section>
+
+    <section class="panel">
+      <h2>Console</h2>
+      <p class="hint">Run any command the server understands (PING, ECHO, GET, SET…).</p>
+      <div class="console" id="console"></div>
+      <form id="console-form" class="row">
+        <input id="console-input" type="text" placeholder="e.g. SET user:1 alice" autocomplete="off" />
+        <button type="submit">Run</button>
+      </form>
+    </section>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>

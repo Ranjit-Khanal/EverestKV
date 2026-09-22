@@ -27,3 +27,15 @@ func (s *Store) Set(key, value string) {
 	defer s.mu.Unlock()
 	s.data[key] = value
 }
+
+// Keys returns a snapshot of every key currently stored, in no
+// particular order.
+func (s *Store) Keys() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	keys := make([]string, 0, len(s.data))
+	for k := range s.data {
+		keys = append(keys, k)
+	}
+	return keys
+}

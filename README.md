@@ -33,7 +33,7 @@ We prefer depth over feature count. A correct `GET`/`SET` path with clean bounda
 ## Architecture
 
 ```
-Client (everestkv-cli / redis-cli)
+Client (everestkv-cli / dashboard / redis-cli)
         │  TCP :6379  (RESP2)
         ▼
 ┌───────────────────────────────┐
@@ -57,6 +57,11 @@ Client (everestkv-cli / redis-cli)
   planned on store: TTL / eviction / file persistence
 ```
 
+`everestkv-cli` and `cmd/everestkv/web` (the dashboard) are both thin frontends over
+`internal/client`, which is the one place that turns operations into RESP2 requests. Neither
+speaks the wire protocol itself, so both stay in lockstep with whatever `internal/command`
+supports.
+
 **Layers**
 
 1. **Transport** — TCP listen/accept; one goroutine per connection.
@@ -64,6 +69,7 @@ Client (everestkv-cli / redis-cli)
 3. **Commands** — `internal/command` maps names to handlers; add new commands here.
 4. **Storage** — `internal/store` holds keys/values behind a `RWMutex`.
 5. **Server** — `internal/server` only owns connections and calls `command.Dispatch`.
+6. **Client** — `internal/client` wraps a RESP2 connection with `Do`/`Get`/`Set`/`Execute`; the CLI and the web dashboard both build on it.
 
 Layout follows [golang-standards/project-layout](https://github.com/golang-standards/project-layout): `cmd/` for binaries, `internal/` for private app code, `pkg/` for reusable libraries.
 
@@ -72,9 +78,11 @@ Layout follows [golang-standards/project-layout](https://github.com/golang-stand
 ```
 cmd/everestkv/          Server entrypoint
 cmd/everestkv/cli/      Interactive RESP client
+cmd/everestkv/web/      Web dashboard (HTTP API + embedded UI)
 internal/server/        TCP accept + session loop
 internal/command/       Command registry and handlers
 internal/store/         In-memory key-value engine
+internal/client/        Shared RESP2 client used by the CLI and dashboard
 pkg/resp/               RESP2 encode/decode
 Makefile                build / run targets
 ```
@@ -82,7 +90,7 @@ Makefile                build / run targets
 ## Status
 
 - RESP2 parser and writer
-- TCP server + interactive CLI
+- TCP server + interactive CLI + web dashboard
 - In-memory store with `GET` / `SET`
 - Command registry (handlers outside `server.go`)
 
@@ -91,15 +99,42 @@ Makefile                build / run targets
 ## Build & run
 
 ```bash
-make build          # bin/everestkv + bin/everestkv-cli
+make build          # bin/everestkv + bin/everestkv-cli + bin/everestkv-web
 make run            # start server on :6379
 make run-cli        # interactive client (server must be up)
+make run-web        # dashboard on :8080, backed by the server on :6379
 make clean
 ```
 
-Supported commands today: `PING`, `ECHO <msg>`, `GET <key>`, `SET <key> <value>`, `QUIT`.
+Supported commands today: `PING`, `ECHO <msg>`, `GET <key>`, `SET <key> <value>`, `KEYS *`, `QUIT`.
+`KEYS` only supports the `*` pattern (every key) for now — no globbing yet.
 
 You can also use `redis-cli` against `:6379` for the same commands.
+
+## Web dashboard
+
+`bin/everestkv-web` is a small HTTP server with no storage logic of its own: every request it
+serves turns into the same RESP2 command a CLI user would type, over `internal/client`.
+
+```bash
+make run          # server on :6379
+make run-web      # dashboard on :8080 (flags: -addr, -server)
+```
+
+Then open `http://localhost:8080`. The UI has a GET/SET form for quick lookups, a "Stored Keys"
+table listing every key/value pair (backed by `KEYS *`, refreshed automatically), and a console
+that runs any raw command line, mirroring the CLI prompt. `EXIT`/`QUIT` are rejected in the
+console since the dashboard holds one shared connection across all browser tabs.
+
+REST endpoints, if you want to script against the dashboard directly instead of the RESP port:
+
+| Method | Path | Body / Query | Notes |
+|--------|------|---------------|-------|
+| GET | `/api/status` | — | Connection health (pings the backing server) |
+| GET | `/api/get` | `?key=` | `{"found": false}` for a missing key, not an error |
+| POST | `/api/set` | `{"key","value"}` | |
+| GET | `/api/keys` | — | `{"entries":[{"key","value"}, ...]}` for every key |
+| POST | `/api/command` | `{"line":"SET a b"}` | Runs any command line; `EXIT`/`QUIT` blocked |
 
 ## Contributing
 
