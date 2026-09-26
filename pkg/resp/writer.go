@@ -16,6 +16,8 @@ func NewWriter(w io.Writer) *Writer {
 	return &Writer{w: w}
 }
 
+// Write encodes v, recursing into arrays. A nil Bulk or Array is written
+// as the corresponding RESP2 null ($-1 or *-1).
 func (w *Writer) Write(v Value) error {
 	switch v.Type {
 	case TypeSimpleString:

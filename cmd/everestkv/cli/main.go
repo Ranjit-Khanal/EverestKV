@@ -1,3 +1,11 @@
+// Command everestkv-cli is an interactive prompt for an EverestKV server.
+// Each line is split on whitespace and sent as one RESP2 command; the
+// reply is printed the same way the web dashboard console shows it.
+// Typing EXIT leaves the prompt without sending anything to the server.
+//
+// Usage:
+//
+//	everestkv-cli [-addr localhost:6379]
 package main
 
 import (

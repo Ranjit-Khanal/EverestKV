@@ -1,3 +1,8 @@
+// Package command implements EverestKV's commands. Each command is a
+// Handler registered by uppercase name in Registry; Dispatch looks the
+// name up case-insensitively and runs it against the store, writing the
+// RESP2 reply. Adding a command means writing a Handler and adding one
+// line to Registry — nothing in internal/server needs to change.
 package command
 
 import (

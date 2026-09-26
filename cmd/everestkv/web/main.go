@@ -1,7 +1,11 @@
-// Command web serves a browser dashboard for EverestKV. It holds no
+// Command everestkv-web serves a browser dashboard for EverestKV. It holds no
 // storage logic of its own: every operation the UI offers is issued
 // over the same RESP2 wire protocol the CLI uses, through the shared
 // internal/client package.
+//
+// Usage:
+//
+//	everestkv-web [-addr :8080] [-server localhost:6379]
 package main
 
 import (

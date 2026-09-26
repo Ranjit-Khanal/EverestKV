@@ -1,3 +1,7 @@
+// Package server owns the network side of EverestKV: it accepts TCP
+// connections, runs one goroutine per connection, decodes RESP2 requests
+// with pkg/resp, and hands each one to internal/command for execution. It
+// contains no command logic of its own.
 package server
 
 import (

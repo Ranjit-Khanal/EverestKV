@@ -38,6 +38,7 @@ import (
 // WAL's record types (1 = put, 2 = delete).
 type EntryType uint8
 
+// Entry types, as stored in each data record's type byte.
 const (
 	EntryPut    EntryType = 1
 	EntryDelete EntryType = 2

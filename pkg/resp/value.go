@@ -1,8 +1,18 @@
+// Package resp encodes and decodes the RESP2 wire protocol used by Redis
+// (https://redis.io/docs/latest/develop/reference/protocol-spec/). It
+// supports the five RESP2 types — simple strings, errors, integers, bulk
+// strings and arrays, including null bulk strings and null arrays — and
+// knows nothing about commands or storage.
+//
+// Parser reads values from a stream; Writer writes them. Value.Command
+// turns a client request (an array of bulk strings) into a command name
+// and arguments. Inline (non-array) commands are not supported.
 package resp
 
 // Type is the first byte of a RESP2 value.
 type Type byte
 
+// RESP2 type prefixes.
 const (
 	TypeSimpleString Type = '+'
 	TypeError        Type = '-'
