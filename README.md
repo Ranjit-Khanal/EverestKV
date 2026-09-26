@@ -84,8 +84,102 @@ Redis, and the wire format.
 | `everestkv-web`  | `make run-web` | Browser dashboard and JSON API on `:8080` (`-addr`, `-server`) |
 
 The CLI and the dashboard are thin frontends over the shared `internal/client` package, so they
-always support exactly what the server supports. See [docs/web-dashboard.md](docs/web-dashboard.md)
-for the dashboard and its HTTP API.
+always support exactly what the server supports.
+
+## Web dashboard: step by step
+
+The dashboard is a browser UI for EverestKV. It stores nothing itself. Every click is sent to the
+server as a normal command, just as if you had typed it in the CLI.
+
+**1. Build the binaries**
+
+```bash
+make build
+```
+
+This produces `bin/everestkv` (server) and `bin/everestkv-web` (dashboard).
+
+**2. Start the server** (terminal 1)
+
+```bash
+make run
+```
+
+Wait for `everestkv listening on :6379`. The dashboard connects to the server at startup and exits
+if the server isn't running, so always start the server first.
+
+**3. Start the dashboard** (terminal 2)
+
+```bash
+make run-web
+```
+
+You should see:
+
+```
+everestkv dashboard on http://localhost:8080 (backing store: localhost:6379)
+```
+
+To change the ports or keep the dashboard reachable only from your machine, run the binary
+directly with flags:
+
+```bash
+./bin/everestkv-web -addr 127.0.0.1:9090 -server localhost:6379
+```
+
+| Flag      | Default          | Meaning                                                    |
+|-----------|------------------|------------------------------------------------------------|
+| `-addr`   | `:8080`          | Where the dashboard listens (the default is all interfaces) |
+| `-server` | `localhost:6379` | Which EverestKV server to talk to                          |
+
+**4. Open it in your browser**
+
+Go to <http://localhost:8080>. The dot in the top-right corner turns green once the dashboard
+can reach the server. It is re-checked every 5 seconds.
+
+**5. Store and read a value (Key / Value panel)**
+
+- Enter a key and a value, for example `city` / `Kathmandu`, and click **SET**.
+- Enter `city` in the GET box and click **GET** to read it back. A missing key shows as not found.
+
+**6. Browse everything (Stored Keys panel)**
+
+This panel lists every key with its value, sorted by key. It refreshes every 5 seconds; click
+**Refresh** to update it immediately. It is designed for small datasets, because it runs one
+`GET` per key.
+
+**7. Run any command (Console panel)**
+
+Type any command the CLI accepts, such as `PING`, `ECHO hello`, `KEYS *` or `GET city`, and
+click **Run**. The output looks the same as in `everestkv-cli`. `EXIT` and `QUIT` are blocked here
+because every browser tab shares one server connection.
+
+**8. (Optional) Script it with the JSON API**
+
+```bash
+curl localhost:8080/api/status
+curl -X POST localhost:8080/api/set -d '{"key":"city","value":"Kathmandu"}'
+curl 'localhost:8080/api/get?key=city'
+curl localhost:8080/api/keys
+curl -X POST localhost:8080/api/command -d '{"line":"PING"}'
+```
+
+**9. Stop it**
+
+Press `Ctrl+C` in each terminal. If you restart the server, restart the dashboard as well,
+because it doesn't reconnect on its own.
+
+> **Troubleshooting**
+> - `connecting to EverestKV at localhost:6379: dial tcp ...: connect: connection refused`: the server isn't running.
+>   Do step 2 first.
+> - `listen tcp :8080: bind: address already in use`: another program is using the port. Pick
+>   a different one with `-addr :9090`.
+> - The status dot is red, or requests return `502`: the server stopped. Restart the server and
+>   then the dashboard.
+>
+> ⚠️ The dashboard has no login. Don't expose it to the internet; see [SECURITY.md](SECURITY.md).
+
+Full endpoint reference and response formats: [docs/web-dashboard.md](docs/web-dashboard.md).
 
 ## Architecture
 
