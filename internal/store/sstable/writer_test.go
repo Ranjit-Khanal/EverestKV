@@ -15,8 +15,8 @@ type decodedEntry struct {
 	tombstone bool
 }
 
-// parseFile fully decodes a finished SSTable file for test verification.
-// It is a minimal stand-in for the not-yet-implemented read path.
+// parseFile fully decodes a finished SSTable file for test verification,
+// independently of Reader, so writer tests don't depend on the read path.
 func parseFile(t *testing.T, path string) (entries []decodedEntry, index []indexEntry) {
 	t.Helper()
 	data, err := os.ReadFile(path)
