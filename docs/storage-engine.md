@@ -184,7 +184,8 @@ footer (16 bytes)
   increasing key order. Tombstones are kept (type `2`, empty value) so that they can shadow
   older values once multi-level reads exist.
 - **Sparse index:** one `[keyLen uint32][key][offset uint64]` entry for the first record of each
-  ~4 KiB block. It is designed for binary-search-then-scan point lookups.
+  ~4 KiB block. `sstable.Reader` loads it into memory on open; a lookup binary-searches it for
+  the last block whose first key is `<=` the target and scans only that block.
 - **Footer:** `[indexOffset uint64][magic uint64]`, where `magic = 0x45766572657374`
   ("Everest").
 
@@ -243,8 +244,9 @@ truncation and checksum tests.
 
 These are known and tracked. Contributions are welcome.
 
-- **No SSTable reads.** `DB.Get` checks only the active and immutable memtables. A key whose only
-  copy has been flushed is reported as not found.
+- **No SSTable reads in `DB.Get`.** `sstable.Reader` can look keys up in a single table, but
+  `DB.Get` does not use it yet and checks only the active and immutable memtables. A key whose
+  only copy has been flushed is reported as not found.
 - **No compaction.** SSTables accumulate, and tombstones are never purged.
 - **No iteration / range scans** across the engine (needed for `KEYS`).
 - **Not used by the server yet.** The server still uses the in-memory `store.Store`.

@@ -1,7 +1,6 @@
-// Package sstable implements the write side of the on-disk sorted-string
-// table format that memtables are flushed into. Reading SSTables back
-// (point lookups via the sparse index) is not implemented yet, but the
-// format is designed to support it.
+// Package sstable implements the on-disk sorted-string table format that
+// memtables are flushed into: Writer builds a table, and Reader serves
+// point lookups from one via its sparse index.
 //
 // File layout:
 //
