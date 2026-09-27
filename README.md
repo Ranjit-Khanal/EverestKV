@@ -256,11 +256,12 @@ Done:
 - [x] TCP server, interactive CLI, web dashboard
 - [x] `PING`, `ECHO`, `GET`, `SET`, `KEYS *`, `EXIT`
 - [x] LSM write path: WAL, group commit, memtable, SSTable flush, manifest, crash recovery
+- [x] Graceful shutdown on SIGINT/SIGTERM
 
 Next, toward a minimum useful KV:
 
 - [ ] SSTable reads (point lookups through the sparse index)
-- [ ] Connect the server to the LSM engine (data directory flag, graceful shutdown)
+- [ ] Connect the server to the LSM engine (data directory flag, `DB.Close` on shutdown)
 - [ ] `DEL`, `EXISTS`, `QUIT`
 - [ ] TTL: `EXPIRE`, `TTL`, `SET ... EX`
 - [ ] Compaction

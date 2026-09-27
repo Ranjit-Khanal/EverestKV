@@ -48,6 +48,21 @@ meant for outside use.
 | `pkg/resp`          | RESP2 encode/decode                     | Commands, storage                    |
 | `internal/store`    | Keys, values, durability                | TCP, RESP                            |
 
+## Shutdown
+
+On SIGINT or SIGTERM, `cmd/everestkv` calls `Server.Shutdown` with a 10-second timeout:
+
+1. The listener is closed, so no new connections are accepted.
+2. Each connection's read deadline is set to now. A client waiting idle for its next command is
+   disconnected immediately. A connection in the middle of a command finishes it and writes the
+   reply, runs any complete commands it had already buffered, and then exits on its next read.
+3. `Shutdown` returns once every connection goroutine has exited. If the timeout expires first
+   (for example, a client that stopped reading a large reply), the remaining connections are
+   force-closed and `Shutdown` returns `context.DeadlineExceeded`.
+
+`Serve` then returns `server.ErrServerClosed`. When `Shutdown` returns, no command is running, so
+the store can be closed safely. A second signal during the wait kills the process immediately.
+
 ## Request lifecycle
 
 What happens when a client sends `SET greeting namaste`:
@@ -115,6 +130,6 @@ The storage layer is in the middle of a transition:
   flush, manifest, recovery) with its own tests. It has not been connected to the server yet, and
   its read path does not consult SSTables yet.
 
-Connecting the server to `store.DB` requires, at minimum: SSTable point reads, a `KEYS`
-equivalent (an iterator across memtables and SSTables), a data-directory flag, and graceful
-shutdown that calls `DB.Close`. The roadmap in the [README](../README.md#roadmap) tracks this work.
+Connecting the server to `store.DB` requires, at minimum: using SSTable point reads in `DB.Get`,
+a `KEYS` equivalent (an iterator across memtables and SSTables), a data-directory flag, and
+calling `DB.Close` after `Server.Shutdown` returns (see [Shutdown](#shutdown)). The roadmap in the [README](../README.md#roadmap) tracks this work.
