@@ -45,6 +45,19 @@ internal/store/           Storage: in-memory Store (used today) + LSM DB engine 
 | `internal/client`   | Turning operations into HTTP requests, CLI command-line parsing | Storage |
 | `internal/store`    | Keys, values, durability                | HTTP                                 |
 
+### Wiring
+
+`cmd/everestkv/main.go` builds the layers and passes each one into the next:
+
+```go
+st := store.NewStore()                                          // storage
+kv := service.NewKV(st)                                         // takes a service.Store
+srv := server.NewServer(cfg, handlers.NewHandlers(kv).Routes())               // handlers take a handlers.KVService
+```
+
+Each package declares the interface it needs (`service.Store`, `handlers.KVService`), so a layer
+can be swapped, for example `store.DB` for the in-memory store, or faked in tests.
+
 ## Shutdown
 
 On SIGINT or SIGTERM, `cmd/everestkv` calls `Server.Shutdown` with a 10-second timeout:
@@ -129,7 +142,8 @@ added to `Client.Execute` therefore works in both frontends immediately, with no
 
 The storage layer is in the middle of a transition:
 
-- **Today:** `internal/server` constructs `store.NewStore()`, the in-memory map. Data is lost on restart.
+- **Today:** `cmd/everestkv` wires `store.NewStore()`, the in-memory map, into the service. Data is
+  lost on restart.
 - **In progress:** `store.DB` is a working LSM engine (WAL, group commit, memtable, SSTable
   flush and point reads, manifest, recovery) with its own tests. Data written to it survives a
   restart or crash. It has not been connected to the server yet.

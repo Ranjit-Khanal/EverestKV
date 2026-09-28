@@ -42,10 +42,10 @@ type CommandError struct {
 
 func (e *CommandError) Error() string { return e.Message }
 
-// New returns a client for the server at addr, either "host:port" or a
+// NewClient returns a client for the server at addr, either "host:port" or a
 // full "http://host:port" base URL. It does not contact the server; call
 // Ping to check it is reachable.
-func New(addr string) *Client {
+func NewClient(addr string) *Client {
 	base := addr
 	if !strings.Contains(base, "://") {
 		base = "http://" + base

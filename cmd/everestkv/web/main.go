@@ -30,7 +30,7 @@ func main() {
 	serverAddr := flag.String("server", "localhost:8379", "EverestKV server address")
 	flag.Parse()
 
-	c := client.New(*serverAddr)
+	c := client.NewClient(*serverAddr)
 	if _, err := c.Ping(); err != nil {
 		log.Fatalf("connecting to EverestKV at %s: %v", *serverAddr, err)
 	}

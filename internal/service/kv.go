@@ -6,8 +6,6 @@ import (
 	"errors"
 	"sort"
 	"time"
-
-	"github.com/Ranjit-Khanal/everestkv/internal/store"
 )
 
 var (
@@ -16,13 +14,22 @@ var (
 	ErrInvalidTTL = errors.New("ttl must not be negative")
 )
 
+// Store is the storage KV depends on. *store.Store implements it.
+type Store interface {
+	Get(key string) (string, bool)
+	Set(key, value string, ttl time.Duration)
+	Delete(key string) bool
+	TTL(key string) (time.Duration, bool)
+	Keys() []string
+}
+
 // KV is the key-value service.
 type KV struct {
-	store *store.Store
+	store Store
 }
 
 // NewKV returns a KV service backed by st.
-func NewKV(st *store.Store) *KV {
+func NewKV(st Store) *KV {
 	return &KV{store: st}
 }
 

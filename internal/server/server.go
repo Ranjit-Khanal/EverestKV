@@ -1,5 +1,4 @@
-// Package server runs the EverestKV HTTP server. The API itself lives in
-// internal/http/handlers.
+// Package server runs the EverestKV HTTP server around a given handler.
 package server
 
 import (
@@ -8,10 +7,6 @@ import (
 	"net"
 	"net/http"
 	"time"
-
-	"github.com/Ranjit-Khanal/everestkv/internal/http/handlers"
-	"github.com/Ranjit-Khanal/everestkv/internal/service"
-	"github.com/Ranjit-Khanal/everestkv/internal/store"
 )
 
 // ErrServerClosed is returned by Serve and ListenAndServe after Shutdown.
@@ -27,21 +22,21 @@ func DefaultConfig() Config {
 	return Config{Addr: ":8379"}
 }
 
-// Server is an HTTP server exposing the key-value store.
+// Server is an HTTP server that serves a handler.
 type Server struct {
-	cfg   Config
-	store *store.Store
-	http  *http.Server
+	cfg  Config
+	http *http.Server
 }
 
-// New returns a Server with the given config and an empty in-memory store.
-func New(cfg Config) *Server {
-	s := &Server{cfg: cfg, store: store.NewStore()}
-	s.http = &http.Server{
-		Handler:           handlers.New(service.NewKV(s.store)).Routes(),
-		ReadHeaderTimeout: 10 * time.Second,
+// NewServer returns a Server that serves h.
+func NewServer(cfg Config, h http.Handler) *Server {
+	return &Server{
+		cfg: cfg,
+		http: &http.Server{
+			Handler:           h,
+			ReadHeaderTimeout: 10 * time.Second,
+		},
 	}
-	return s
 }
 
 // ListenAndServe listens on cfg.Addr and calls Serve.

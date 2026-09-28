@@ -36,13 +36,22 @@ const (
 	ttlPrefix = "/v1/ttl/"
 )
 
-// Handlers serves API requests through the KV service.
-type Handlers struct {
-	kv *service.KV
+// KVService is the service Handlers depends on. *service.KV implements it.
+type KVService interface {
+	Get(key string) (string, error)
+	Set(key, value string, ttl time.Duration) error
+	Delete(key string) error
+	TTL(key string) (time.Duration, error)
+	Keys() []string
 }
 
-// New returns Handlers backed by kv.
-func New(kv *service.KV) *Handlers {
+// Handlers serves API requests through a KVService.
+type Handlers struct {
+	kv KVService
+}
+
+// NewHandlers returns Handlers backed by kv.
+func NewHandlers(kv KVService) *Handlers {
 	return &Handlers{kv: kv}
 }
 

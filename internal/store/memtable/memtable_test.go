@@ -8,7 +8,7 @@ import (
 )
 
 func TestPutGet(t *testing.T) {
-	m := New()
+	m := NewMemtable()
 	m.Put(1, []byte("k1"), []byte("v1"))
 	m.Put(2, []byte("k2"), []byte("v2"))
 
@@ -24,7 +24,7 @@ func TestPutGet(t *testing.T) {
 }
 
 func TestOverwrite(t *testing.T) {
-	m := New()
+	m := NewMemtable()
 	m.Put(1, []byte("k"), []byte("first"))
 	m.Put(2, []byte("k"), []byte("second"))
 
@@ -35,7 +35,7 @@ func TestOverwrite(t *testing.T) {
 }
 
 func TestTombstone(t *testing.T) {
-	m := New()
+	m := NewMemtable()
 	m.Put(1, []byte("k"), []byte("v"))
 	m.Delete(2, []byte("k"))
 
@@ -53,7 +53,7 @@ func TestTombstone(t *testing.T) {
 }
 
 func TestSortedIteration(t *testing.T) {
-	m := New()
+	m := NewMemtable()
 	keys := []string{"delta", "alpha", "charlie", "echo", "bravo"}
 	for i, k := range keys {
 		m.Put(uint64(i+1), []byte(k), []byte("v-"+k))
@@ -77,7 +77,7 @@ func TestSortedIteration(t *testing.T) {
 }
 
 func TestIterationSeesOverwritesAndTombstones(t *testing.T) {
-	m := New()
+	m := NewMemtable()
 	m.Put(1, []byte("a"), []byte("old"))
 	m.Put(2, []byte("a"), []byte("new"))
 	m.Put(3, []byte("b"), []byte("b-val"))
@@ -111,7 +111,7 @@ func TestIterationSeesOverwritesAndTombstones(t *testing.T) {
 }
 
 func TestSize(t *testing.T) {
-	m := New()
+	m := NewMemtable()
 	if m.Size() != 0 {
 		t.Fatalf("empty Size() = %d, want 0", m.Size())
 	}
@@ -133,7 +133,7 @@ func TestSize(t *testing.T) {
 }
 
 func TestConcurrentAccess(t *testing.T) {
-	m := New()
+	m := NewMemtable()
 	const goroutines = 8
 	const perGoroutine = 200
 

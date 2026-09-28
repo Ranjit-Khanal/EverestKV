@@ -22,7 +22,7 @@ func main() {
 	addr := flag.String("addr", "localhost:8379", "EverestKV server address")
 	flag.Parse()
 
-	c := client.New(*addr)
+	c := client.NewClient(*addr)
 	if _, err := c.Ping(); err != nil {
 		fmt.Printf("Error connecting to server: %v\n", err)
 		os.Exit(1)

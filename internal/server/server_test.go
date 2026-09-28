@@ -13,17 +13,32 @@ import (
 
 	"github.com/Ranjit-Khanal/everestkv/internal/client"
 	"github.com/Ranjit-Khanal/everestkv/internal/http/handlers"
+	"github.com/Ranjit-Khanal/everestkv/internal/service"
+	"github.com/Ranjit-Khanal/everestkv/internal/store"
 )
 
-// startServer serves on a random local port and returns the server, its
-// address, and a channel that receives Serve's return value.
+// newTestServer wires a Server over a fresh in-memory store.
+func newTestServer() (*Server, *store.Store) {
+	st := store.NewStore()
+	return NewServer(Config{}, handlers.NewHandlers(service.NewKV(st)).Routes()), st
+}
+
+// startServer serves a new test server on a random local port.
 func startServer(t *testing.T) (*Server, string, <-chan error) {
+	t.Helper()
+	srv, _ := newTestServer()
+	addr, errc := serve(t, srv)
+	return srv, addr, errc
+}
+
+// serve runs srv on a random local port and returns its address and a
+// channel that receives Serve's return value.
+func serve(t *testing.T, srv *Server) (string, <-chan error) {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("Listen: %v", err)
 	}
-	srv := New(Config{})
 	errc := make(chan error, 1)
 	go func() { errc <- srv.Serve(ln) }()
 	t.Cleanup(func() {
@@ -31,7 +46,7 @@ func startServer(t *testing.T) (*Server, string, <-chan error) {
 		defer cancel()
 		srv.Shutdown(ctx)
 	})
-	return srv, ln.Addr().String(), errc
+	return ln.Addr().String(), errc
 }
 
 func waitServe(t *testing.T, errc <-chan error) {
@@ -48,7 +63,7 @@ func waitServe(t *testing.T, errc <-chan error) {
 
 func TestKVRoundTrip(t *testing.T) {
 	_, addr, _ := startServer(t)
-	c := client.New(addr)
+	c := client.NewClient(addr)
 
 	if got, err := c.Ping(); err != nil || got != "PONG" {
 		t.Fatalf("Ping = %q, %v", got, err)
@@ -98,7 +113,7 @@ func TestKVRoundTrip(t *testing.T) {
 
 func TestTTL(t *testing.T) {
 	_, addr, _ := startServer(t)
-	c := client.New(addr)
+	c := client.NewClient(addr)
 
 	if err := c.Set("temp", "v", 2*time.Second); err != nil {
 		t.Fatalf("Set with TTL: %v", err)
@@ -186,7 +201,7 @@ func TestBadRequests(t *testing.T) {
 
 func TestExecute(t *testing.T) {
 	_, addr, _ := startServer(t)
-	c := client.New(addr)
+	c := client.NewClient(addr)
 
 	steps := []struct{ line, want string }{
 		{"PING", "PONG"},
@@ -215,7 +230,7 @@ func TestExecute(t *testing.T) {
 
 func TestShutdownClosesIdleClients(t *testing.T) {
 	srv, addr, errc := startServer(t)
-	c := client.New(addr)
+	c := client.NewClient(addr)
 	if err := c.Set("k", "v", 0); err != nil { // leaves an idle keep-alive connection
 		t.Fatalf("Set: %v", err)
 	}
@@ -237,7 +252,8 @@ func TestShutdownClosesIdleClients(t *testing.T) {
 }
 
 func TestShutdownWaitsForInFlightRequest(t *testing.T) {
-	srv, addr, errc := startServer(t)
+	srv, st := newTestServer()
+	addr, errc := serve(t, srv)
 
 	// A PUT whose body is still being sent keeps its request in flight.
 	pr, pw := io.Pipe()
@@ -273,7 +289,7 @@ func TestShutdownWaitsForInFlightRequest(t *testing.T) {
 		t.Fatalf("Shutdown: %v", err)
 	}
 	waitServe(t, errc)
-	if v, _ := srv.store.Get("slow"); v != "part1-part2" {
+	if v, _ := st.Get("slow"); v != "part1-part2" {
 		t.Fatalf("stored %q, want full body", v)
 	}
 }
@@ -302,7 +318,7 @@ func TestShutdownTimeoutForceCloses(t *testing.T) {
 }
 
 func TestServeAfterShutdown(t *testing.T) {
-	srv := New(Config{})
+	srv, _ := newTestServer()
 	if err := srv.Shutdown(context.Background()); err != nil {
 		t.Fatalf("Shutdown: %v", err)
 	}

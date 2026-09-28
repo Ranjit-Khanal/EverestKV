@@ -96,7 +96,7 @@ func Open(dir string, opts Options) (*DB, error) {
 		return nil, fmt.Errorf("store: scan wal segments: %w", err)
 	}
 
-	active := memtable.New()
+	active := memtable.NewMemtable()
 	var maxSeq uint64
 	var replayedFirst uint64
 	replayedAny := false
@@ -308,7 +308,7 @@ func (db *DB) rotate() error {
 
 	frozen := db.active
 	frozenLog := db.log
-	db.active = memtable.New()
+	db.active = memtable.NewMemtable()
 	db.log = newLog
 
 	db.immutables = append(db.immutables, &immutableMemtable{

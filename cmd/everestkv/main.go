@@ -15,7 +15,10 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Ranjit-Khanal/everestkv/internal/http/handlers"
 	"github.com/Ranjit-Khanal/everestkv/internal/server"
+	"github.com/Ranjit-Khanal/everestkv/internal/service"
+	"github.com/Ranjit-Khanal/everestkv/internal/store"
 )
 
 const shutdownTimeout = 10 * time.Second
@@ -24,7 +27,10 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	srv := server.New(server.DefaultConfig())
+	// Wire the layers: store → service → handlers → server.
+	st := store.NewStore()
+	kv := service.NewKV(st)
+	srv := server.NewServer(server.DefaultConfig(), handlers.NewHandlers(kv).Routes())
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- srv.ListenAndServe() }()
 

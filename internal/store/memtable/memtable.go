@@ -12,8 +12,8 @@ type Memtable struct {
 	size int64
 }
 
-// New returns an empty Memtable.
-func New() *Memtable {
+// NewMemtable returns an empty Memtable.
+func NewMemtable() *Memtable {
 	return &Memtable{skl: newSkiplist()}
 }
 
