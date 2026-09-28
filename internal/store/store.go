@@ -39,3 +39,12 @@ func (s *Store) Keys() []string {
 	}
 	return keys
 }
+
+// Delete removes key and reports whether it existed.
+func (s *Store) Delete(key string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, ok := s.data[key]
+	delete(s.data, key)
+	return ok
+}

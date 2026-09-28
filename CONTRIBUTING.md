@@ -9,33 +9,33 @@ everything lives.
 
 ## What we value
 
-1. **Architecture first**: clear package boundaries (`cmd` / `internal` / `pkg`), no god packages,
-   no RESP details leaking into the store and no store details leaking into the parser.
-2. **Core engineering**: networking, protocol framing, concurrency safety, the memory model, and
+1. **Architecture first**: clear package boundaries (`cmd` / `internal`), no god packages,
+   no HTTP details leaking into the store and no store details leaking into the handlers.
+2. **Core engineering**: networking, API design, concurrency safety, the memory model, and
    persistence design. Feature work should build on those foundations.
 3. **Small, reviewable changes**: one concern per PR. A solid `SET` beats ten unfinished commands.
-4. **Readable Go**: simple control flow, explicit errors, and names that match Redis semantics
-   wherever we claim compatibility.
+4. **Readable Go**: simple control flow, explicit errors, and HTTP status codes that mean what
+   the spec says they mean.
 5. **Evidence**: back up behavior or performance claims with a test, a benchmark, or a short
    design note in the PR.
 
 ## What we are cautious about
 
 - Large dependency additions (the module currently has none)
-- Protocol changes that break RESP clients without a strong reason
+- Breaking changes to the `/v1` HTTP API without a strong reason
 - Premature abstraction (frameworks, plugin systems, heavy interfaces)
 - Drive-by refactors unrelated to the PR's goal
-- Features without a clear place in the architecture (transport → protocol → dispatch → store)
+- Features without a clear place in the architecture (HTTP → store)
 
 ## Getting started
 
-Requirements: Go **1.26+** (see `go.mod`), `make`, and optionally `redis-cli` for manual testing.
+Requirements: Go **1.26+** (see `go.mod`), `make`, and optionally `curl` for manual testing.
 
 ```bash
 git clone https://github.com/Ranjit-Khanal/everestkv.git
 cd everestkv
 make build
-make run        # terminal 1: server on :6379
+make run        # terminal 1: server on :8379
 make run-cli    # terminal 2: interactive client
 ```
 
@@ -70,27 +70,25 @@ make run-cli    # terminal 2: interactive client
   go test ./internal/store -run '^$' -bench . -cpu 1,4,16
   ```
 
-- For command and protocol changes, also check manually with `make run` plus `make run-cli` or
-  `redis-cli`.
+- For API changes, also check manually with `make run` plus `make run-cli` or `curl`.
 
 ## Design guidelines
 
 | Layer               | Owns                         | Must not own            |
 |---------------------|------------------------------|-------------------------|
 | `cmd/*`             | Wiring `main`                | Business logic          |
-| `internal/server`   | Connections, session loop    | Command implementations |
-| `internal/command`  | Handlers + registry          | TCP accept loop         |
-| `internal/client`   | Client-side RESP requests    | Storage, HTTP           |
-| `pkg/resp`          | RESP parse/encode            | Commands, storage       |
-| `internal/store`    | Keys, values, TTL, durability| TCP or RESP             |
+| `internal/server`   | Routes, handlers, status codes | Storage internals     |
+| `internal/client`   | HTTP requests, CLI command lines | Storage             |
+| `internal/store`    | Keys, values, TTL, durability| HTTP                    |
 
-To add a command, follow the walkthrough in [docs/commands.md](docs/commands.md#adding-a-command).
+To add an operation, follow the walkthrough in [docs/commands.md](docs/commands.md#adding-an-operation).
 In short:
 
-1. Add a handler under `internal/command/` and register it in `Registry`.
+1. Add a route and handler in `internal/server/server.go`.
 2. Mutate and query state only through the store API.
-3. Reply with the correct RESP type (`+`, `-`, `$`, `:`, `*`), matching Redis.
-4. Update the command table in `docs/commands.md`.
+3. Return the correct HTTP status, and errors as `{"error": "..."}`.
+4. Add the matching `internal/client` method (and a `Client.Execute` case for CLI access).
+5. Update the tables in `docs/commands.md`.
 
 For storage engine work, read [docs/storage-engine.md](docs/storage-engine.md). Any change to an
 on-disk format or to the recovery order must keep the crash-safety invariants listed there, and
@@ -113,7 +111,7 @@ Behavior changes are only complete when the docs are updated as well:
 
 | You changed…                 | Update                                     |
 |------------------------------|--------------------------------------------|
-| A command or reply           | `docs/commands.md`                         |
+| An endpoint or CLI command   | `docs/commands.md`                         |
 | Dashboard or its HTTP API    | `docs/web-dashboard.md`                    |
 | Package layout or layering   | `docs/architecture.md`, README layout      |
 | Storage formats or recovery  | `docs/storage-engine.md`                   |

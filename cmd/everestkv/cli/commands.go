@@ -1,14 +1,15 @@
 package main
 
-// Command is a CLI / wire command name.
+// Command is a CLI command name.
 type Command string
 
 const (
 	CommandPing Command = "PING"
-	CommandEcho Command = "ECHO"
 	CommandGet  Command = "GET"
 	CommandSet  Command = "SET"
-	CommandQuit Command = "QUIT"
+	CommandDel  Command = "DEL"
+	CommandKeys Command = "KEYS"
+	CommandQuit Command = "QUIT" // local only — same as EXIT
 	CommandExit Command = "EXIT" // local only — closes CLI without talking to the server
 )
 

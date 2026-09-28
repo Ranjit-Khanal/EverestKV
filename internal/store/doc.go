@@ -6,8 +6,7 @@
 //
 //   - DB, a log-structured merge-tree (LSM) engine with a write-ahead log,
 //     skip-list memtables, SSTable flushes and a manifest for crash
-//     recovery. It is not yet wired into the server, and its read path does
-//     not yet consult SSTables (see DB.Get).
+//     recovery. It is not yet wired into the server.
 //
 // Durability contract for DB: a Put or Delete returns only after its WAL
 // record has been fsynced (per Options.SyncMode), so an acknowledged write

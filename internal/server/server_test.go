@@ -3,13 +3,15 @@ package server
 import (
 	"context"
 	"errors"
+	"io"
 	"net"
+	"net/http"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/Ranjit-Khanal/everestkv/internal/client"
-	"github.com/Ranjit-Khanal/everestkv/pkg/resp"
 )
 
 // startServer serves on a random local port and returns the server, its
@@ -31,16 +33,6 @@ func startServer(t *testing.T) (*Server, string, <-chan error) {
 	return srv, ln.Addr().String(), errc
 }
 
-func dial(t *testing.T, addr string) *client.Client {
-	t.Helper()
-	c, err := client.Dial(addr)
-	if err != nil {
-		t.Fatalf("Dial: %v", err)
-	}
-	t.Cleanup(func() { c.Close() })
-	return c
-}
-
 func waitServe(t *testing.T, errc <-chan error) {
 	t.Helper()
 	select {
@@ -53,10 +45,122 @@ func waitServe(t *testing.T, errc <-chan error) {
 	}
 }
 
-func TestShutdownDisconnectsIdleClients(t *testing.T) {
+func TestKVRoundTrip(t *testing.T) {
+	_, addr, _ := startServer(t)
+	c := client.New(addr)
+
+	if got, err := c.Ping(); err != nil || got != "PONG" {
+		t.Fatalf("Ping = %q, %v", got, err)
+	}
+
+	// Keys that ServeMux would clean or split, and a binary value.
+	pairs := map[string]string{
+		"plain":      "v",
+		"with space": "hello world",
+		"a/b":        "slash",
+		"a//b":       "double slash",
+		"x/../y":     "dotdot",
+		"q?x=1#frag": "query chars",
+		"नमस्ते":     "unicode",
+		"bin":        "\x00\xff\r\n",
+	}
+	for k, v := range pairs {
+		if err := c.Set(k, v); err != nil {
+			t.Fatalf("Set(%q): %v", k, err)
+		}
+	}
+	for k, want := range pairs {
+		got, found, err := c.Get(k)
+		if err != nil || !found || got != want {
+			t.Fatalf("Get(%q) = %q, %v, %v; want %q", k, got, found, err, want)
+		}
+	}
+
+	keys, err := c.Keys()
+	if err != nil {
+		t.Fatalf("Keys: %v", err)
+	}
+	if len(keys) != len(pairs) || !slices.IsSorted(keys) {
+		t.Fatalf("Keys = %q, want %d sorted keys", keys, len(pairs))
+	}
+
+	if existed, err := c.Delete("a/b"); err != nil || !existed {
+		t.Fatalf("Delete existing = %v, %v", existed, err)
+	}
+	if existed, err := c.Delete("a/b"); err != nil || existed {
+		t.Fatalf("Delete missing = %v, %v", existed, err)
+	}
+	if _, found, err := c.Get("a/b"); err != nil || found {
+		t.Fatalf("Get after Delete: found=%v err=%v", found, err)
+	}
+}
+
+func TestBadRequests(t *testing.T) {
+	_, addr, _ := startServer(t)
+	base := "http://" + addr
+
+	tests := []struct {
+		method, path string
+		body         io.Reader
+		want         int
+	}{
+		{http.MethodGet, "/v1/kv/", nil, http.StatusBadRequest},
+		{http.MethodGet, "/v1/kv/%zz", nil, http.StatusBadRequest},
+		{http.MethodPost, "/v1/kv/k", nil, http.StatusMethodNotAllowed},
+		{http.MethodPut, "/v1/kv/big", strings.NewReader(strings.Repeat("x", MaxValueBytes+1)), http.StatusRequestEntityTooLarge},
+		{http.MethodPost, "/v1/keys", nil, http.StatusMethodNotAllowed},
+		{http.MethodGet, "/nope", nil, http.StatusNotFound},
+	}
+	for _, tt := range tests {
+		req, err := http.NewRequest(tt.method, base, tt.body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.URL.Opaque = "//" + addr + tt.path // send the path verbatim, even when malformed
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("%s %s: %v", tt.method, tt.path, err)
+		}
+		res.Body.Close()
+		if res.StatusCode != tt.want {
+			t.Errorf("%s %s = %d, want %d", tt.method, tt.path, res.StatusCode, tt.want)
+		}
+	}
+}
+
+func TestExecute(t *testing.T) {
+	_, addr, _ := startServer(t)
+	c := client.New(addr)
+
+	steps := []struct{ line, want string }{
+		{"PING", "PONG"},
+		{"keys *", "(empty array)"},
+		{"SET city Kathmandu", "OK"},
+		{"get city", "Kathmandu"},
+		{"GET missing", "(nil)"},
+		{"KEYS *", "city"},
+		{"DEL city", "1"},
+		{"DEL city", "0"},
+	}
+	for _, s := range steps {
+		got, err := c.Execute(s.line)
+		if err != nil || got != s.want {
+			t.Fatalf("Execute(%q) = %q, %v; want %q", s.line, got, err, s.want)
+		}
+	}
+
+	for _, line := range []string{"", "FLY away", "GET", "SET k", "KEYS a*"} {
+		var cmdErr *client.CommandError
+		if _, err := c.Execute(line); !errors.As(err, &cmdErr) {
+			t.Errorf("Execute(%q) err = %v, want *CommandError", line, err)
+		}
+	}
+}
+
+func TestShutdownClosesIdleClients(t *testing.T) {
 	srv, addr, errc := startServer(t)
-	c := dial(t, addr)
-	if err := c.Set("k", "v"); err != nil {
+	c := client.New(addr)
+	if err := c.Set("k", "v"); err != nil { // leaves an idle keep-alive connection
 		t.Fatalf("Set: %v", err)
 	}
 
@@ -72,70 +176,66 @@ func TestShutdownDisconnectsIdleClients(t *testing.T) {
 	waitServe(t, errc)
 
 	if _, err := c.Ping(); err == nil {
-		t.Fatalf("idle client still usable after Shutdown")
-	}
-	if conn, err := net.DialTimeout("tcp", addr, time.Second); err == nil {
-		conn.Close()
-		t.Fatalf("server still accepting connections after Shutdown")
+		t.Fatalf("server still answering after Shutdown")
 	}
 }
 
-func TestShutdownRunsBufferedCommands(t *testing.T) {
+func TestShutdownWaitsForInFlightRequest(t *testing.T) {
 	srv, addr, errc := startServer(t)
-	conn, err := net.Dial("tcp", addr)
-	if err != nil {
-		t.Fatalf("Dial: %v", err)
-	}
-	defer conn.Close()
 
-	// Pipeline two commands, and wait for the first reply so both are
-	// known to have reached the server before Shutdown starts.
-	w := resp.NewWriter(conn)
-	for _, cmd := range [][]string{{"SET", "a", "1"}, {"SET", "b", "2"}} {
-		if err := w.Write(cmdValue(cmd...)); err != nil {
-			t.Fatalf("write: %v", err)
+	// A PUT whose body is still being sent keeps its request in flight.
+	pr, pw := io.Pipe()
+	done := make(chan error, 1)
+	go func() {
+		req, _ := http.NewRequest(http.MethodPut, "http://"+addr+"/v1/kv/slow", pr)
+		res, err := http.DefaultClient.Do(req)
+		if err == nil {
+			res.Body.Close()
+			if res.StatusCode != http.StatusNoContent {
+				err = errors.New(res.Status)
+			}
 		}
-	}
-	p := resp.NewParser(conn)
-	if v, err := p.Parse(); err != nil || v.Str != "OK" {
-		t.Fatalf("first reply = %+v, %v", v, err)
+		done <- err
+	}()
+	pw.Write([]byte("part1-"))
+	time.Sleep(100 * time.Millisecond) // let the request reach the handler
+
+	shut := make(chan error, 1)
+	go func() { shut <- srv.Shutdown(context.Background()) }()
+	select {
+	case err := <-shut:
+		t.Fatalf("Shutdown returned %v while a request was in flight", err)
+	case <-time.After(100 * time.Millisecond):
 	}
 
-	if err := srv.Shutdown(context.Background()); err != nil {
+	pw.Write([]byte("part2"))
+	pw.Close()
+	if err := <-done; err != nil {
+		t.Fatalf("in-flight PUT: %v", err)
+	}
+	if err := <-shut; err != nil {
 		t.Fatalf("Shutdown: %v", err)
 	}
 	waitServe(t, errc)
-
-	if v, err := p.Parse(); err != nil || v.Str != "OK" {
-		t.Fatalf("second pipelined reply = %+v, %v; want OK", v, err)
-	}
-	if _, ok := srv.store.Get("b"); !ok {
-		t.Fatalf("pipelined SET b was not applied")
+	if v, _ := srv.store.Get("slow"); v != "part1-part2" {
+		t.Fatalf("stored %q, want full body", v)
 	}
 }
 
-func TestShutdownTimeoutForceClosesStuckConnections(t *testing.T) {
+func TestShutdownTimeoutForceCloses(t *testing.T) {
 	srv, addr, errc := startServer(t)
-	c := dial(t, addr)
-	big := strings.Repeat("x", 1<<20)
-	if err := c.Set("big", big); err != nil {
-		t.Fatalf("Set: %v", err)
-	}
 
-	// Ask for far more reply data than the socket buffers hold and never
-	// read it, so the server blocks writing a reply and cannot drain.
-	conn, err := net.Dial("tcp", addr)
-	if err != nil {
-		t.Fatalf("Dial: %v", err)
-	}
-	defer conn.Close()
-	w := resp.NewWriter(conn)
-	for i := 0; i < 64; i++ {
-		if err := w.Write(cmdValue("GET", "big")); err != nil {
-			t.Fatalf("write: %v", err)
+	// Start a PUT and never finish its body.
+	pr, pw := io.Pipe()
+	defer pw.Close()
+	go func() {
+		req, _ := http.NewRequest(http.MethodPut, "http://"+addr+"/v1/kv/stuck", pr)
+		if res, err := http.DefaultClient.Do(req); err == nil {
+			res.Body.Close()
 		}
-	}
-	time.Sleep(100 * time.Millisecond) // let the server fill the socket
+	}()
+	pw.Write([]byte("partial"))
+	time.Sleep(100 * time.Millisecond)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
@@ -143,13 +243,6 @@ func TestShutdownTimeoutForceClosesStuckConnections(t *testing.T) {
 		t.Fatalf("Shutdown = %v, want context.DeadlineExceeded", err)
 	}
 	waitServe(t, errc)
-
-	srv.mu.Lock()
-	n := len(srv.conns)
-	srv.mu.Unlock()
-	if n != 0 {
-		t.Fatalf("%d connections still tracked after forced Shutdown", n)
-	}
 }
 
 func TestServeAfterShutdown(t *testing.T) {
@@ -167,12 +260,4 @@ func TestServeAfterShutdown(t *testing.T) {
 	if _, err := net.DialTimeout("tcp", ln.Addr().String(), time.Second); err == nil {
 		t.Fatalf("listener not closed by Serve after Shutdown")
 	}
-}
-
-func cmdValue(args ...string) resp.Value {
-	items := make([]resp.Value, len(args))
-	for i, a := range args {
-		items[i] = resp.Value{Type: resp.TypeBulkString, Bulk: []byte(a)}
-	}
-	return resp.Value{Type: resp.TypeArray, Array: items}
 }

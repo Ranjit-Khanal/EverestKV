@@ -4,8 +4,8 @@
 This document covers its write path, on-disk formats, crash-safety argument, and current
 limitations.
 
-> **Status:** the write path, flushing, and crash recovery are implemented and tested. Reads
-> from flushed SSTables, compaction, and integration with the server are **not** implemented
+> **Status:** the write path, flushing, crash recovery, and point reads (memtables and SSTables)
+> are implemented and tested. Compaction and integration with the server are **not** implemented
 > yet. The server still uses the in-memory `store.Store`. See [Limitations](#limitations).
 
 ## Overview
@@ -97,11 +97,34 @@ A single goroutine (`flushLoop`) takes the oldest immutable memtable and runs `f
    `00000K.sst.tmp`, fsynced, renamed to `00000K.sst`, and the directory is fsynced.
 2. Save a new **MANIFEST** listing the SSTable as live, with
    `WALSafeDeleteBelow = lastWALSegment + 1`.
-3. Delete WAL segments `firstWALSegment..lastWALSegment`.
-4. Pop the memtable off the queue and broadcast, which wakes any writers blocked on backpressure.
+3. Open an `sstable.Reader` for the new table, then delete WAL segments
+   `firstWALSegment..lastWALSegment`.
+4. Under `db.mu`, in one step, add the reader to `db.tables` and pop the memtable off the queue,
+   then broadcast, which wakes any writers blocked on backpressure.
 
-The memtable stays readable in the immutable queue until step 4, so there is never a window where
-a key is in neither memory nor a manifest-listed SSTable.
+The memtable stays readable in the immutable queue until step 4, and the SSTable becomes readable
+in the same critical section, so `Get` always finds a flushed key in exactly one of the two.
+
+## Read path
+
+`DB.Get` checks, newest data first, and returns the first entry it finds for the key:
+
+1. the active memtable,
+2. the immutable memtables, newest first,
+3. the live SSTables (`db.tables`), newest first. SSTable ids are assigned in flush order, so a
+   higher id always holds newer data.
+
+Because the first entry wins, a tombstone shadows every older value, including values in older
+SSTables. Each SSTable lookup binary-searches that table's in-memory sparse index and reads one
+data block (see [SSTable](#sstable-nnnnnnsst)).
+
+`Get` holds `db.mu.RLock()` for the whole lookup, including the disk reads. Writers also take the
+read lock, so reads and writes don't block each other. It does mean `rotate()`, the flush
+goroutine's final step, and `Close` wait for in-flight reads, which in exchange guarantees a table
+is never closed while a read is using it.
+
+`Open` opens a reader for every SSTable listed in the MANIFEST, and fails if any of them is
+missing or corrupt. `Close` closes them all.
 
 ## Group commit
 
@@ -244,9 +267,6 @@ truncation and checksum tests.
 
 These are known and tracked. Contributions are welcome.
 
-- **No SSTable reads in `DB.Get`.** `sstable.Reader` can look keys up in a single table, but
-  `DB.Get` does not use it yet and checks only the active and immutable memtables. A key whose
-  only copy has been flushed is reported as not found.
 - **No compaction.** SSTables accumulate, and tombstones are never purged.
 - **No iteration / range scans** across the engine (needed for `KEYS`).
 - **Not used by the server yet.** The server still uses the in-memory `store.Store`.

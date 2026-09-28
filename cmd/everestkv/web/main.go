@@ -1,16 +1,17 @@
 // Command everestkv-web serves a browser dashboard for EverestKV. It holds no
 // storage logic of its own: every operation the UI offers is issued
-// over the same RESP2 wire protocol the CLI uses, through the shared
-// internal/client package.
+// against the server's HTTP API, through the same internal/client
+// package the CLI uses.
 //
 // Usage:
 //
-//	everestkv-web [-addr :8080] [-server localhost:6379]
+//	everestkv-web [-addr :8080] [-server localhost:8379]
 package main
 
 import (
 	"embed"
 	"encoding/json"
+	"errors"
 	"flag"
 	"io/fs"
 	"log"
@@ -26,14 +27,13 @@ var staticFS embed.FS
 
 func main() {
 	httpAddr := flag.String("addr", ":8080", "HTTP listen address for the dashboard")
-	serverAddr := flag.String("server", "localhost:6379", "EverestKV server address")
+	serverAddr := flag.String("server", "localhost:8379", "EverestKV server address")
 	flag.Parse()
 
-	c, err := client.Dial(*serverAddr)
-	if err != nil {
+	c := client.New(*serverAddr)
+	if _, err := c.Ping(); err != nil {
 		log.Fatalf("connecting to EverestKV at %s: %v", *serverAddr, err)
 	}
-	defer c.Close()
 
 	api := &api{client: c, serverAddr: *serverAddr}
 
@@ -56,9 +56,7 @@ func main() {
 	}
 }
 
-// api holds the single shared client used to talk to the EverestKV
-// server. Client.Do serializes access, so one connection is enough
-// for a dashboard's traffic.
+// api holds the shared client used to talk to the EverestKV server.
 type api struct {
 	client     *client.Client
 	serverAddr string
@@ -120,9 +118,9 @@ type entry struct {
 }
 
 // handleKeys lists every key currently stored, with its value, for
-// the dashboard's keys panel. It runs KEYS * followed by a GET per
-// key — no different from doing the same from the CLI or redis-cli,
-// just batched server-side.
+// the dashboard's keys panel. It lists the keys followed by a GET per
+// key — no different from doing the same from the CLI, just batched
+// server-side.
 func (a *api) handleKeys(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "GET required")
@@ -196,19 +194,29 @@ func (a *api) handleCommand(w http.ResponseWriter, r *http.Request) {
 	if fields := strings.Fields(req.Line); len(fields) > 0 {
 		switch strings.ToUpper(fields[0]) {
 		case "EXIT", "QUIT":
-			// The dashboard shares one connection across every browser
-			// tab; closing it here would disconnect all of them.
+			// These only leave the CLI prompt; there is nothing to leave here.
 			writeError(w, http.StatusBadRequest, "EXIT/QUIT is disabled in the dashboard console")
 			return
 		}
 	}
-	v, err := a.client.Execute(req.Line)
+	reply, err := a.client.Execute(req.Line)
 	if err != nil {
-		writeError(w, http.StatusBadGateway, err.Error())
+		if client.IsTransportError(err) {
+			writeError(w, http.StatusBadGateway, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"reply": commandErrorText(err), "isError": true})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"reply":   client.FormatReply(v),
-		"isError": client.IsError(v),
-	})
+	writeJSON(w, http.StatusOK, map[string]any{"reply": reply, "isError": false})
+}
+
+// commandErrorText shows server errors by their message alone, like the
+// CLI's "ERR ..." lines, rather than with the HTTP status appended.
+func commandErrorText(err error) string {
+	var apiErr *client.APIError
+	if errors.As(err, &apiErr) {
+		return "ERR " + apiErr.Message
+	}
+	return err.Error()
 }

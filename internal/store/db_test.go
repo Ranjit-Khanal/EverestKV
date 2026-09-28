@@ -142,15 +142,16 @@ func TestRotationContinuesWhileFlushInProgress(t *testing.T) {
 		t.Fatalf("max observed pending immutable memtables = %d, want >= 2 (writes should outrun the flush goroutine at least once)", maxObserved)
 	}
 
-	// One final write, guaranteed to land after everything above: it's
-	// almost certainly still in the active (unflushed) memtable, so it's a
-	// safe check given Get doesn't yet consult flushed SSTables.
-	if err := db.Put([]byte("final"), val); err != nil {
-		t.Fatalf("Put(final): %v", err)
-	}
-	v, ok, err := db.Get([]byte("final"))
-	if err != nil || !ok || !bytes.Equal(v, val) {
-		t.Fatalf("Get(final) = %q, %v, %v; want present", v, ok, err)
+	// Every write must be readable, whether it is still in memory or has
+	// already been flushed to an SSTable.
+	for g := 0; g < goroutines; g++ {
+		for i := 0; i < perGoroutine; i++ {
+			key := []byte(fmt.Sprintf("g%d-key-%04d", g, i))
+			v, ok, err := db.Get(key)
+			if err != nil || !ok || !bytes.Equal(v, val) {
+				t.Fatalf("Get(%s) = %q, %v, %v; want present", key, v, ok, err)
+			}
+		}
 	}
 }
 
@@ -393,5 +394,220 @@ func TestCloseIsIdempotentAndRejectsWritesAfter(t *testing.T) {
 	}
 	if err := db.Put([]byte("b"), []byte("2")); err != ErrClosed {
 		t.Fatalf("Put after Close = %v, want ErrClosed", err)
+	}
+}
+
+// waitFlushed blocks until every immutable memtable has been flushed to an
+// SSTable, failing the test if the flush goroutine reports an error.
+func waitFlushed(t *testing.T, db *DB) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		db.mu.RLock()
+		pending, err := len(db.immutables), db.flushErr
+		db.mu.RUnlock()
+		if err != nil {
+			t.Fatalf("flush failed: %v", err)
+		}
+		if pending == 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %d immutable memtables to flush", pending)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+func peekTableCount(db *DB) int {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+	return len(db.tables)
+}
+
+func TestGetReadsFlushedSSTables(t *testing.T) {
+	dir := t.TempDir()
+	db := mustOpen(t, dir, Options{MemtableSizeThreshold: 256, MaxImmutableMemtables: 4})
+	defer db.Close()
+
+	const n = 200
+	for i := 0; i < n; i++ {
+		if err := db.Put([]byte(fmt.Sprintf("k%03d", i)), []byte(fmt.Sprintf("v%03d", i))); err != nil {
+			t.Fatalf("Put %d: %v", i, err)
+		}
+	}
+	waitFlushed(t, db)
+	if peekTableCount(db) < 2 {
+		t.Fatalf("expected several flushed sstables, got %d", peekTableCount(db))
+	}
+	// k000 was written first, so it must have been flushed: this Get can
+	// only succeed by reading an SSTable.
+	if _, _, inMem := db.active.Get([]byte("k000")); inMem {
+		t.Fatalf("k000 unexpectedly still in the active memtable")
+	}
+
+	for i := 0; i < n; i++ {
+		key := fmt.Sprintf("k%03d", i)
+		want := fmt.Sprintf("v%03d", i)
+		v, ok, err := db.Get([]byte(key))
+		if err != nil || !ok || string(v) != want {
+			t.Fatalf("Get(%s) = %q, %v, %v; want %q, true, nil", key, v, ok, err, want)
+		}
+	}
+	if _, ok, err := db.Get([]byte("missing")); err != nil || ok {
+		t.Fatalf("Get(missing) = ok=%v err=%v; want false, nil", ok, err)
+	}
+}
+
+// fillAndFlush writes enough filler keys to rotate the active memtable and
+// waits for everything pending to reach an SSTable.
+func fillAndFlush(t *testing.T, db *DB, prefix string) {
+	t.Helper()
+	val := bytes.Repeat([]byte("f"), 64)
+	for i := 0; i < 8; i++ {
+		if err := db.Put([]byte(fmt.Sprintf("%s-fill-%02d", prefix, i)), val); err != nil {
+			t.Fatalf("Put filler: %v", err)
+		}
+	}
+	waitFlushed(t, db)
+}
+
+func TestNewerSSTableShadowsOlder(t *testing.T) {
+	dir := t.TempDir()
+	db := mustOpen(t, dir, Options{MemtableSizeThreshold: 256, MaxImmutableMemtables: 4})
+	defer db.Close()
+
+	// Each step lands in its own SSTable, oldest to newest.
+	put := func(k, v string) {
+		t.Helper()
+		if err := db.Put([]byte(k), []byte(v)); err != nil {
+			t.Fatalf("Put(%s): %v", k, err)
+		}
+	}
+	put("overwritten", "old")
+	put("deleted", "old")
+	put("resurrected", "old")
+	fillAndFlush(t, db, "a")
+
+	put("overwritten", "new")
+	if err := db.Delete([]byte("deleted")); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if err := db.Delete([]byte("resurrected")); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	fillAndFlush(t, db, "b")
+
+	put("resurrected", "again")
+	fillAndFlush(t, db, "c")
+
+	if got := peekTableCount(db); got < 3 {
+		t.Fatalf("expected at least 3 sstables, got %d", got)
+	}
+	check := func(k, want string, wantOK bool) {
+		t.Helper()
+		v, ok, err := db.Get([]byte(k))
+		if err != nil || ok != wantOK || string(v) != want {
+			t.Fatalf("Get(%s) = %q, %v, %v; want %q, %v, nil", k, v, ok, err, want, wantOK)
+		}
+	}
+	check("overwritten", "new", true)
+	check("deleted", "", false)
+	check("resurrected", "again", true)
+}
+
+// TestDataSurvivesRestart is the end-to-end persistence guarantee: after a
+// clean Close or a crash, reopening the directory returns every
+// acknowledged write, whether it had reached an SSTable or only the WAL.
+func TestDataSurvivesRestart(t *testing.T) {
+	for _, crash := range []bool{false, true} {
+		name := "clean close"
+		if crash {
+			name = "crash"
+		}
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			opts := Options{MemtableSizeThreshold: 512, MaxImmutableMemtables: 4}
+			db := mustOpen(t, dir, opts)
+
+			const n = 300
+			want := map[string]string{}
+			for i := 0; i < n; i++ {
+				k, v := fmt.Sprintf("k%03d", i), fmt.Sprintf("v%03d", i)
+				if err := db.Put([]byte(k), []byte(v)); err != nil {
+					t.Fatalf("Put: %v", err)
+				}
+				want[k] = v
+			}
+			// Overwrite and delete some keys that are already on disk.
+			for i := 0; i < n; i += 10 {
+				k := fmt.Sprintf("k%03d", i)
+				if err := db.Put([]byte(k), []byte("updated")); err != nil {
+					t.Fatalf("Put: %v", err)
+				}
+				want[k] = "updated"
+			}
+			for i := 5; i < n; i += 10 {
+				k := fmt.Sprintf("k%03d", i)
+				if err := db.Delete([]byte(k)); err != nil {
+					t.Fatalf("Delete: %v", err)
+				}
+				delete(want, k)
+			}
+			waitFlushed(t, db)
+			// A final write that stays in the active memtable, so after a
+			// crash it exists only in the WAL.
+			if err := db.Put([]byte("last"), []byte("in-wal")); err != nil {
+				t.Fatalf("Put(last): %v", err)
+			}
+			want["last"] = "in-wal"
+			if peekTableCount(db) == 0 {
+				t.Fatalf("expected flushed sstables before restart")
+			}
+
+			if crash {
+				// Same simulated crash as TestCrashRecoveryReplaysUnflushedWrites.
+				if err := db.log.w.Close(); err != nil {
+					t.Fatalf("close underlying wal file: %v", err)
+				}
+			} else if err := db.Close(); err != nil {
+				t.Fatalf("Close: %v", err)
+			}
+
+			db2 := mustOpen(t, dir, opts)
+			defer db2.Close()
+			if peekTableCount(db2) == 0 {
+				t.Fatalf("reopened DB has no sstables open")
+			}
+			for i := 0; i < n; i++ {
+				k := fmt.Sprintf("k%03d", i)
+				v, ok, err := db2.Get([]byte(k))
+				wantV, wantOK := want[k]
+				if err != nil || ok != wantOK || string(v) != wantV {
+					t.Fatalf("Get(%s) after restart = %q, %v, %v; want %q, %v, nil", k, v, ok, err, wantV, wantOK)
+				}
+			}
+			if v, ok, err := db2.Get([]byte("last")); err != nil || !ok || string(v) != "in-wal" {
+				t.Fatalf("Get(last) after restart = %q, %v, %v; want in-wal", v, ok, err)
+			}
+		})
+	}
+}
+
+func TestOpenFailsOnCorruptSSTable(t *testing.T) {
+	dir := t.TempDir()
+	db := mustOpen(t, dir, Options{MemtableSizeThreshold: 256})
+	fillAndFlush(t, db, "a")
+	if err := db.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	path := filepath.Join(dir, "000001.sst")
+	if err := os.WriteFile(path, []byte("not an sstable at all"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if db, err := Open(dir, Options{}); err == nil {
+		db.Close()
+		t.Fatalf("Open succeeded with a corrupt live sstable")
 	}
 }
