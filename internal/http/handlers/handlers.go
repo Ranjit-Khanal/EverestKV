@@ -1,4 +1,4 @@
-// Package handlers serves the HTTP/JSON API over the store.
+// Package handlers serves the HTTP API.
 //
 // Routes:
 //
@@ -9,9 +9,8 @@
 //	DELETE /v1/kv/{key}    204, or 404 if the key did not exist
 //	GET    /v1/ttl/{key}   200 {"ttl": N}, -1 if no expiry, or 404
 //
-// Keys are the rest of the path after the prefix, percent-decoded, so they
-// may contain any byte (including "/") as long as the client escapes it.
-// Values are raw bytes, not JSON. Errors are {"error": "..."}.
+// Keys are percent-decoded from the path and may contain "/". Values are raw
+// bytes. Errors are {"error": "..."}.
 package handlers
 
 import (
@@ -36,7 +35,7 @@ const (
 	ttlPrefix = "/v1/ttl/"
 )
 
-// KVService is the service Handlers depends on. *service.KV implements it.
+// KVService is what Handlers needs. *service.KV implements it.
 type KVService interface {
 	Get(key string) (string, error)
 	Set(key, value string, ttl time.Duration) error
@@ -50,12 +49,12 @@ type Handlers struct {
 	kv KVService
 }
 
-// NewHandlers returns Handlers backed by kv.
+// NewHandlers returns Handlers that use kv.
 func NewHandlers(kv KVService) *Handlers {
 	return &Handlers{kv: kv}
 }
 
-// Routes returns an http.Handler for every API route.
+// Routes returns the API handler.
 func (h *Handlers) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/ping", h.Ping)
@@ -63,7 +62,7 @@ func (h *Handlers) Routes() http.Handler {
 	return h.routeKeys(mux)
 }
 
-// routeKeys routes /v1/kv/ and /v1/ttl/ itself, since ServeMux would rewrite keys like "a//b".
+// routeKeys handles key paths itself; ServeMux would rewrite keys like "a//b".
 func (h *Handlers) routeKeys(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.EscapedPath()
@@ -86,7 +85,7 @@ func (h *Handlers) routeKeys(next http.Handler) http.Handler {
 	})
 }
 
-// KV handles GET, HEAD, PUT and DELETE on a single key.
+// KV handles GET, HEAD, PUT and DELETE on a key.
 func (h *Handlers) KV(w http.ResponseWriter, r *http.Request, key string) {
 	switch r.Method {
 	case http.MethodGet, http.MethodHead:
@@ -137,7 +136,7 @@ func (h *Handlers) KV(w http.ResponseWriter, r *http.Request, key string) {
 	}
 }
 
-// TTL reports the seconds left before a key expires.
+// TTL returns the seconds left on a key.
 func (h *Handlers) TTL(w http.ResponseWriter, r *http.Request, key string) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		w.Header().Set("Allow", "GET, HEAD")
@@ -174,7 +173,7 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
-// writeServiceError maps a service error to its HTTP status.
+// writeServiceError maps a service error to a status code.
 func writeServiceError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, service.ErrNotFound):

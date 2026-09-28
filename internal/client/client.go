@@ -1,8 +1,4 @@
-// Package client implements a small HTTP client for talking to an
-// EverestKV server. It is the single place that knows how to turn
-// operations (PING, GET, SET, ...) into HTTP requests and responses back
-// into Go values, so every frontend — the interactive CLI, the web
-// dashboard, tests — drives the server through the exact same path.
+// Package client talks to an EverestKV server over HTTP. The CLI, dashboard and tests all use it.
 package client
 
 import (
@@ -18,7 +14,7 @@ import (
 	"time"
 )
 
-// Client talks to an EverestKV server. It is safe for concurrent use.
+// Client talks to one server. Safe for concurrent use.
 type Client struct {
 	base string
 	http *http.Client
@@ -34,17 +30,14 @@ func (e *APIError) Error() string {
 	return fmt.Sprintf("server: %s (HTTP %d)", e.Message, e.Status)
 }
 
-// CommandError is a command line Execute could not run: an unknown
-// command or the wrong number of arguments.
+// CommandError is a bad command line, like an unknown command or wrong args.
 type CommandError struct {
 	Message string
 }
 
 func (e *CommandError) Error() string { return e.Message }
 
-// NewClient returns a client for the server at addr, either "host:port" or a
-// full "http://host:port" base URL. It does not contact the server; call
-// Ping to check it is reachable.
+// NewClient returns a client for addr ("host:port" or a full URL). It doesn't connect.
 func NewClient(addr string) *Client {
 	base := addr
 	if !strings.Contains(base, "://") {
@@ -71,7 +64,7 @@ func keyPath(key string) string {
 	return "/v1/kv/" + url.PathEscape(key)
 }
 
-// apiError reads an error response's JSON body into an *APIError.
+// apiError turns an error response into an *APIError.
 func apiError(res *http.Response) error {
 	var body struct {
 		Error string `json:"error"`
@@ -82,7 +75,7 @@ func apiError(res *http.Response) error {
 	return &APIError{Status: res.StatusCode, Message: body.Error}
 }
 
-// Ping checks liveness against the server.
+// Ping checks the server is up.
 func (c *Client) Ping() (string, error) {
 	res, err := c.do(http.MethodGet, "/v1/ping", nil)
 	if err != nil {
@@ -96,8 +89,7 @@ func (c *Client) Ping() (string, error) {
 	return string(b), err
 }
 
-// Get returns the value for key. found is false when the key does
-// not exist, not an error.
+// Get returns the value for key. A missing key is not an error.
 func (c *Client) Get(key string) (value string, found bool, err error) {
 	res, err := c.do(http.MethodGet, keyPath(key), nil)
 	if err != nil {
@@ -179,7 +171,7 @@ func (c *Client) Delete(key string) (bool, error) {
 	}
 }
 
-// Keys returns every key currently stored, sorted.
+// Keys returns every key, sorted.
 func (c *Client) Keys() ([]string, error) {
 	res, err := c.do(http.MethodGet, "/v1/keys", nil)
 	if err != nil {
@@ -198,9 +190,7 @@ func (c *Client) Keys() ([]string, error) {
 	return body.Keys, nil
 }
 
-// Execute parses a plain command line the way the CLI's input box
-// does (whitespace-separated fields), runs it, and returns the reply as
-// a terminal would print it. Bad command lines return a *CommandError.
+// Execute runs a CLI command line and returns the reply to print.
 func (c *Client) Execute(line string) (string, error) {
 	fields := strings.Fields(line)
 	if len(fields) == 0 {
@@ -279,9 +269,7 @@ func (c *Client) Execute(line string) (string, error) {
 	}
 }
 
-// IsTransportError reports whether err came from failing to reach the
-// server, as opposed to the server or the command line rejecting a
-// request.
+// IsTransportError reports whether err means the server couldn't be reached.
 func IsTransportError(err error) bool {
 	var urlErr *url.Error
 	return errors.As(err, &urlErr)

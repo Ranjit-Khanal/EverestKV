@@ -1,9 +1,7 @@
-// Command everestkv runs the EverestKV server: an HTTP key-value API
-// listening on :8379, so curl or any HTTP client can talk to it directly.
+// Command everestkv runs the server on :8379.
 //
-// On SIGINT or SIGTERM it shuts down gracefully: it stops accepting
-// connections and waits up to shutdownTimeout for in-flight requests to
-// finish. A second signal during that wait exits immediately.
+// On SIGINT or SIGTERM it waits up to shutdownTimeout for requests to finish.
+// A second signal exits right away.
 package main
 
 import (
@@ -27,7 +25,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// Wire the layers: store → service → handlers → server.
+	// store → service → handlers → server
 	st := store.NewStore()
 	kv := service.NewKV(st)
 	srv := server.NewServer(server.DefaultConfig(), handlers.NewHandlers(kv).Routes())
@@ -39,7 +37,7 @@ func main() {
 		log.Fatal(err)
 	case <-ctx.Done():
 	}
-	// Restore default signal handling so a second signal kills the process.
+	// Let a second signal kill the process.
 	stop()
 
 	log.Printf("shutting down (waiting up to %s for in-flight requests; signal again to force)", shutdownTimeout)

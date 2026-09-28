@@ -10,8 +10,7 @@ import (
 	"github.com/Ranjit-Khanal/everestkv/internal/store/wal"
 )
 
-// findWALSegments returns the segment numbers of every WAL segment file
-// present in dir, in ascending order.
+// findWALSegments returns the WAL segment numbers in dir, sorted.
 func findWALSegments(dir string) ([]uint64, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -31,8 +30,7 @@ func findWALSegments(dir string) ([]uint64, error) {
 	return segments, nil
 }
 
-// replaySegment applies every record in WAL segment seg to mt, and updates
-// *maxSeq to the highest sequence number seen.
+// replaySegment applies segment seg to mt and tracks the highest seq.
 func replaySegment(dir string, seg uint64, mt *memtable.Memtable, maxSeq *uint64) error {
 	r, err := wal.OpenSegmentReader(dir, seg)
 	if err != nil {

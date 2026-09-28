@@ -10,7 +10,7 @@ const (
 	probability = 0.25
 )
 
-// entry is a single key's latest state in the skip list.
+// entry is one key's latest state.
 type entry struct {
 	key       []byte
 	value     []byte
@@ -18,17 +18,15 @@ type entry struct {
 	seq       uint64
 }
 
-// node is a skip list node. forward[i] is the next node at level i.
+// node is a skip list node; forward[i] is the next node at level i.
 type node struct {
 	entry   entry
 	forward []*node
 }
 
-// skiplist is a sorted, singly-linked skip list keyed by byte-slice key
-// order (bytes.Compare). It is not safe for concurrent use on its own; the
-// Memtable wrapper provides synchronization.
+// skiplist is a sorted skip list. Not safe for concurrent use; Memtable locks it.
 type skiplist struct {
-	head  *node // sentinel with no entry, forward[i] points into the list
+	head  *node // sentinel, holds no entry
 	level int   // highest level currently in use, >= 1
 }
 
@@ -47,9 +45,7 @@ func randomLevel() int {
 	return level
 }
 
-// search fills update with, at each level, the last node whose key is
-// strictly less than key, and returns the node at level 0 that would come
-// right after them (the candidate for an exact match).
+// search fills update with the last node before key at each level and returns the next node.
 func (s *skiplist) search(key []byte, update []*node) *node {
 	cur := s.head
 	for i := s.level - 1; i >= 0; i-- {
@@ -61,8 +57,7 @@ func (s *skiplist) search(key []byte, update []*node) *node {
 	return cur.forward[0]
 }
 
-// upsert inserts a new entry or overwrites the existing one for e.key. It
-// returns the previous entry and true if one existed.
+// upsert inserts or replaces e and returns the old entry, if any.
 func (s *skiplist) upsert(e entry) (entry, bool) {
 	updatePtrs := make([]*node, maxLevel)
 	next := s.search(e.key, updatePtrs)

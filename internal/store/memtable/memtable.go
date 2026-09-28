@@ -1,11 +1,9 @@
-// Package memtable implements the in-memory sorted structure that buffers
-// writes between the WAL and an on-disk SSTable flush.
+// Package memtable buffers sorted writes in memory until they are flushed to an SSTable.
 package memtable
 
 import "sync"
 
-// Memtable is a sorted, in-memory table of the latest value (or tombstone)
-// per key. It is safe for concurrent use.
+// Memtable holds the latest value or tombstone per key. Safe for concurrent use.
 type Memtable struct {
 	mu   sync.RWMutex
 	skl  *skiplist
@@ -17,15 +15,14 @@ func NewMemtable() *Memtable {
 	return &Memtable{skl: newSkiplist()}
 }
 
-// Put records key=value as of seq, overwriting any earlier state for key.
+// Put sets key to value at seq.
 func (m *Memtable) Put(seq uint64, key, value []byte) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.upsert(entry{key: clone(key), value: clone(value), tombstone: false, seq: seq})
 }
 
-// Delete records a tombstone for key as of seq, overwriting any earlier
-// state for key.
+// Delete writes a tombstone for key at seq.
 func (m *Memtable) Delete(seq uint64, key []byte) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -40,9 +37,7 @@ func (m *Memtable) upsert(e entry) {
 	}
 }
 
-// Get returns the latest recorded state for key: the value and
-// tombstone=false for a live entry, tombstone=true for a deleted entry, or
-// found=false if key has never been written in this memtable.
+// Get returns the latest state of key. found is false if key was never written here.
 func (m *Memtable) Get(key []byte) (value []byte, tombstone bool, found bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -53,36 +48,27 @@ func (m *Memtable) Get(key []byte) (value []byte, tombstone bool, found bool) {
 	return e.value, e.tombstone, true
 }
 
-// Size returns the approximate size in bytes of all keys and values
-// currently held (excluding tombstones' absent values and skip-list
-// bookkeeping overhead).
+// Size returns the approximate bytes of keys and values held.
 func (m *Memtable) Size() int64 {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.size
 }
 
-// Iterator walks a Memtable's entries in ascending key order as of the
-// moment NewIterator was called. It does not observe later writes.
+// Iterator walks entries in key order.
 type Iterator struct {
 	cur *node
 }
 
-// NewIterator returns an Iterator positioned before the first entry.
-// Call Next to advance to the first entry.
-//
-// The Iterator walks the underlying skip list nodes directly, without
-// holding the Memtable's lock for its whole lifetime, so it must only be
-// used on a Memtable that is no longer accepting writes (e.g. one already
-// frozen for flushing). Iterating a Memtable concurrently with Put/Delete
-// on it is a data race.
+// NewIterator returns an Iterator before the first entry; call Next to start.
+// Only use it on a frozen memtable: it reads without holding the lock.
 func (m *Memtable) NewIterator() *Iterator {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return &Iterator{cur: &node{forward: []*node{m.skl.front()}}}
 }
 
-// Next advances the iterator and reports whether an entry is available.
+// Next moves to the next entry and reports whether there is one.
 func (it *Iterator) Next() bool {
 	if it.cur == nil || it.cur.forward[0] == nil {
 		return false
@@ -94,13 +80,13 @@ func (it *Iterator) Next() bool {
 // Key returns the current entry's key.
 func (it *Iterator) Key() []byte { return it.cur.entry.key }
 
-// Value returns the current entry's value (empty for a tombstone).
+// Value returns the current entry's value.
 func (it *Iterator) Value() []byte { return it.cur.entry.value }
 
-// Tombstone reports whether the current entry is a deletion marker.
+// Tombstone reports whether the current entry is a delete.
 func (it *Iterator) Tombstone() bool { return it.cur.entry.tombstone }
 
-// Seq returns the sequence number the current entry was written at.
+// Seq returns the current entry's sequence number.
 func (it *Iterator) Seq() uint64 { return it.cur.entry.seq }
 
 func clone(b []byte) []byte {

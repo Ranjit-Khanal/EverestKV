@@ -10,16 +10,11 @@ import (
 	"sort"
 )
 
-// ErrCorrupt is returned (wrapped) when an SSTable's footer, index or data
-// records are inconsistent with the file's size or with each other.
+// ErrCorrupt means the table's footer, index or data don't add up.
 var ErrCorrupt = errors.New("sstable: corrupt table")
 
-// Reader serves point lookups from a single finished SSTable. It loads the
-// footer and sparse index into memory on open; each Get then reads exactly
-// one data block from disk.
-//
-// A Reader is safe for concurrent use: lookups use ReadAt, which does not
-// share a file offset between callers.
+// Reader looks keys up in one SSTable, reading one block per Get.
+// Safe for concurrent use.
 type Reader struct {
 	path        string
 	f           *os.File
@@ -27,8 +22,7 @@ type Reader struct {
 	indexOffset uint64 // end of the data section
 }
 
-// Open opens SSTable id in dir, verifies its footer and loads its sparse
-// index.
+// Open opens table id in dir and loads its index.
 func Open(dir string, id uint64) (*Reader, error) {
 	path := filepath.Join(dir, FileName(id))
 	f, err := os.Open(path)
@@ -80,9 +74,7 @@ func (r *Reader) load() error {
 	return nil
 }
 
-// decodeIndex parses the sparse index section. Offsets must start at 0,
-// be strictly increasing and point inside the data section, and keys must
-// be strictly increasing, since Get relies on all of that.
+// decodeIndex parses the index. Keys and offsets must be increasing; Get relies on it.
 func decodeIndex(buf []byte, dataEnd uint64) ([]indexEntry, error) {
 	var index []indexEntry
 	for off := 0; off < len(buf); {
@@ -117,12 +109,9 @@ func decodeIndex(buf []byte, dataEnd uint64) ([]indexEntry, error) {
 	return index, nil
 }
 
-// Get looks key up in the table. found reports whether the table holds an
-// entry for key at all; when it does, tombstone reports whether that entry
-// is a delete, in which case value is nil. A tombstone must still shadow
-// older tables, so callers should stop searching when found is true.
+// Get looks up key. Stop searching older tables once found is true, even for a tombstone.
 func (r *Reader) Get(key []byte) (value []byte, tombstone, found bool, err error) {
-	// The candidate block is the last one whose first key is <= key.
+	// Pick the last block whose first key is <= key.
 	i := sort.Search(len(r.index), func(i int) bool {
 		return bytes.Compare(r.index[i].key, key) > 0
 	}) - 1
@@ -161,8 +150,7 @@ func (r *Reader) Get(key []byte) (value []byte, tombstone, found bool, err error
 	return nil, false, false, nil
 }
 
-// decodeEntry parses one data record from the start of buf, returning the
-// entry (whose slices alias buf) and the number of bytes it occupied.
+// decodeEntry parses one record from buf and returns its size. Slices alias buf.
 func decodeEntry(buf []byte) (Entry, int, error) {
 	const fixed = 4 + 1 + 4 // keyLen + type + valLen
 	if len(buf) < fixed {
@@ -196,7 +184,7 @@ func decodeEntry(buf []byte) (Entry, int, error) {
 	}
 }
 
-// Close closes the underlying file.
+// Close closes the file.
 func (r *Reader) Close() error {
 	return r.f.Close()
 }

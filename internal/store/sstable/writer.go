@@ -1,6 +1,4 @@
-// Package sstable implements the on-disk sorted-string table format that
-// memtables are flushed into: Writer builds a table, and Reader serves
-// point lookups from one via its sparse index.
+// Package sstable is the on-disk sorted table that memtables flush into.
 //
 // File layout:
 //
@@ -10,17 +8,15 @@
 //	sparse index
 //	footer (fixed size)
 //
-// Each data record is:
+// Data record:
 //
 //	[keyLen uint32][key][type uint8][valLen uint32][value]
 //
-// The sparse index holds one entry per ~blockSize bytes of data, mapping
-// the first key written after crossing that boundary to its byte offset:
+// Sparse index, one entry per ~blockSize bytes of data:
 //
 //	[keyLen uint32][key][offset uint64]  (repeated)
 //
-// The footer is fixed-size and always the last footerSize bytes of the
-// file:
+// Footer, the last footerSize bytes:
 //
 //	[indexOffset uint64][magic uint64]
 package sstable
@@ -33,47 +29,42 @@ import (
 	"path/filepath"
 )
 
-// EntryType distinguishes a value write from a tombstone, matching the
-// WAL's record types (1 = put, 2 = delete).
+// EntryType is a put or a delete, same values as the WAL.
 type EntryType uint8
 
-// Entry types, as stored in each data record's type byte.
+// Entry types.
 const (
 	EntryPut    EntryType = 1
 	EntryDelete EntryType = 2
 )
 
-// Entry is a single key's final state, as written into an SSTable.
+// Entry is one key's final state.
 type Entry struct {
 	Key       []byte
 	Value     []byte
 	Tombstone bool
 }
 
-// blockSize is the approximate size, in bytes, of a data block between
-// sparse index entries.
+// blockSize is the approximate data block size between index entries.
 const blockSize = 4096
 
-// magic identifies a valid EverestKV SSTable footer.
-const magic uint64 = 0x45766572657374 // "Everest" ASCII bytes, arbitrary sentinel
+// magic marks a valid footer.
+const magic uint64 = 0x45766572657374 // "Everest" in ASCII
 
 const footerSize = 8 + 8 // indexOffset + magic
 
-// FileName returns the on-disk file name for SSTable id, e.g. "000001.sst".
+// FileName returns the file name for id, e.g. "000001.sst".
 func FileName(id uint64) string {
 	return fmt.Sprintf("%06d.sst", id)
 }
 
-// indexEntry is one sparse-index record: the first key of a block and the
-// byte offset that block starts at.
+// indexEntry is a block's first key and its offset.
 type indexEntry struct {
 	key    []byte
 	offset uint64
 }
 
-// Writer builds a single SSTable file. Entries must be written in strictly
-// increasing key order (the caller is expected to drive this from a sorted
-// source, e.g. a frozen memtable's Iterator).
+// Writer builds one SSTable. Keys must be written in increasing order.
 type Writer struct {
 	finalPath string
 	tmpPath   string
@@ -87,8 +78,7 @@ type Writer struct {
 	closed            bool
 }
 
-// NewWriter creates the temporary file for a new SSTable with the given id
-// in dir. The file is only made visible under its final name by Finish.
+// NewWriter creates a temp file for table id. Finish gives it its real name.
 func NewWriter(dir string, id uint64) (*Writer, error) {
 	finalPath := filepath.Join(dir, FileName(id))
 	tmpPath := finalPath + ".tmp"
@@ -100,8 +90,7 @@ func NewWriter(dir string, id uint64) (*Writer, error) {
 	return &Writer{finalPath: finalPath, tmpPath: tmpPath, f: f}, nil
 }
 
-// Write appends e to the table. Keys must be strictly increasing across
-// calls.
+// Write appends e. Keys must be increasing.
 func (w *Writer) Write(e Entry) error {
 	if w.lastKey != nil && bytes.Compare(e.Key, w.lastKey) <= 0 {
 		return fmt.Errorf("sstable: out-of-order key %q after %q", e.Key, w.lastKey)
@@ -125,16 +114,14 @@ func (w *Writer) Write(e Entry) error {
 	return nil
 }
 
-// Info describes a completed SSTable.
+// Info describes a finished SSTable.
 type Info struct {
 	Path       string
 	NumEntries int
 	Size       int64
 }
 
-// Finish writes the sparse index and footer, fsyncs the file, atomically
-// renames it to its final name, and fsyncs the containing directory so the
-// rename itself is durable.
+// Finish writes the index and footer, fsyncs, and renames the file into place.
 func (w *Writer) Finish() (Info, error) {
 	if w.closed {
 		return Info{}, fmt.Errorf("sstable: Finish called twice")
@@ -184,8 +171,7 @@ func (w *Writer) Finish() (Info, error) {
 	return Info{Path: w.finalPath, NumEntries: w.numEntries, Size: size}, nil
 }
 
-// Abort closes and removes the in-progress temp file. It is a no-op after
-// a successful Finish.
+// Abort removes the temp file. No-op after Finish.
 func (w *Writer) Abort() error {
 	if w.closed {
 		return nil
@@ -234,8 +220,7 @@ func cloneBytes(b []byte) []byte {
 	return out
 }
 
-// syncDir fsyncs a directory so that entries created or renamed within it
-// (e.g. this package's atomic rename) are durable across a crash.
+// syncDir fsyncs dir so renames in it survive a crash.
 func syncDir(dir string) error {
 	d, err := os.Open(dir)
 	if err != nil {

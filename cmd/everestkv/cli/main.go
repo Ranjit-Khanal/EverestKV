@@ -1,7 +1,4 @@
-// Command everestkv-cli is an interactive prompt for an EverestKV server.
-// Each line is split on whitespace and turned into one HTTP request; the
-// reply is printed the same way the web dashboard console shows it.
-// Typing EXIT or QUIT leaves the prompt without contacting the server.
+// Command everestkv-cli is an interactive prompt for the server. EXIT or QUIT leaves.
 //
 // Usage:
 //

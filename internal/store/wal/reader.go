@@ -8,14 +8,13 @@ import (
 	"os"
 )
 
-// Reader iterates the records in a single WAL segment file in order.
+// Reader reads records from one segment in order.
 type Reader struct {
 	f   *os.File
 	own bool
 }
 
-// OpenSegmentReader opens the WAL segment file for segment in dir for
-// reading.
+// OpenSegmentReader opens segment in dir for reading.
 func OpenSegmentReader(dir string, segment uint64) (*Reader, error) {
 	f, err := os.Open(SegmentPath(dir, segment))
 	if err != nil {
@@ -24,7 +23,7 @@ func OpenSegmentReader(dir string, segment uint64) (*Reader, error) {
 	return &Reader{f: f, own: true}, nil
 }
 
-// Close closes the underlying file, if this Reader opened it.
+// Close closes the file if this Reader opened it.
 func (r *Reader) Close() error {
 	if !r.own {
 		return nil
@@ -32,11 +31,8 @@ func (r *Reader) Close() error {
 	return r.f.Close()
 }
 
-// Next returns the next record in the segment. It returns io.EOF both at a
-// clean end of file and when it encounters a torn write (a truncated or
-// checksum-invalid record) — the tail of a crashed process's last write is
-// expected, not an error, and reading stops there as if it were the end of
-// the log.
+// Next returns the next record. A torn or corrupt tail after a crash also
+// returns io.EOF, since that is expected.
 func (r *Reader) Next() (Record, error) {
 	var crcBuf [crcSize]byte
 	if _, err := io.ReadFull(r.f, crcBuf[:]); err != nil {

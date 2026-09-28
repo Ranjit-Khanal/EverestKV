@@ -48,9 +48,7 @@ func (s *Server) ListenAndServe() error {
 	return s.Serve(ln)
 }
 
-// Serve accepts connections on ln until an error occurs or Shutdown is
-// called, in which case it returns ErrServerClosed. Serve always closes
-// ln.
+// Serve serves on ln until Shutdown, then returns ErrServerClosed. It closes ln.
 func (s *Server) Serve(ln net.Listener) error {
 	log.Printf("everestkv listening on %s", ln.Addr())
 	return s.http.Serve(ln)

@@ -1,5 +1,4 @@
-// Package service holds the key-value business rules between the HTTP
-// handlers and the store. It knows nothing about HTTP.
+// Package service holds the key-value rules between handlers and the store.
 package service
 
 import (
@@ -14,7 +13,7 @@ var (
 	ErrInvalidTTL = errors.New("ttl must not be negative")
 )
 
-// Store is the storage KV depends on. *store.Store implements it.
+// Store is what KV needs. *store.Store implements it.
 type Store interface {
 	Get(key string) (string, bool)
 	Set(key, value string, ttl time.Duration)
@@ -28,7 +27,7 @@ type KV struct {
 	store Store
 }
 
-// NewKV returns a KV service backed by st.
+// NewKV returns a KV that uses st.
 func NewKV(st Store) *KV {
 	return &KV{store: st}
 }

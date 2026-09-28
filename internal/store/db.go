@@ -14,56 +14,42 @@ import (
 	"github.com/Ranjit-Khanal/everestkv/internal/store/wal"
 )
 
-// immutableMemtable is a frozen memtable waiting to be flushed, plus the
-// range of WAL segments whose data it captures. The range is usually a
-// single segment (one rotation = one segment), except for the first
-// memtable after a recovery that replayed several not-yet-flushed
-// segments, which spans all of them plus the fresh segment writes land in
-// until it too rotates.
+// immutableMemtable is a frozen memtable waiting to flush, and the WAL segments it covers.
 type immutableMemtable struct {
 	mt              *memtable.Memtable
 	firstWALSegment uint64
 	lastWALSegment  uint64
 }
 
-// DB is an LSM-tree key-value store: writes go to a write-ahead log and an
-// in-memory memtable; the memtable is periodically flushed to an immutable,
-// sorted SSTable on disk. Reads check the memtables first, then the
-// SSTables from newest to oldest.
+// DB is an LSM-tree store: WAL + memtable, flushed to SSTables.
+// Reads check memtables first, then SSTables newest to oldest.
 type DB struct {
 	dir  string
 	opts Options
 
 	seqCounter atomic.Uint64
 
-	// mu guards active/log (read via RLock by writers, swapped via Lock by
-	// rotate), immutables/closed/flushErr (read/written via Lock by
-	// writers, rotate, and the flush goroutine), and tables (read via
-	// RLock by Get, appended via Lock by the flush goroutine). Using one RWMutex for both
-	// lets writers proceed concurrently (RLock) while still giving rotate
-	// and Close an exclusive, consistent view when they need to swap state
-	// or drain in-flight writers.
+	// mu guards the fields up to flushErr. Writers and Get take RLock so they run
+	// together; rotate, flush and Close take Lock to swap state.
 	mu             sync.RWMutex
 	active         *memtable.Memtable
 	log            *commitLog
-	activeWALFirst uint64 // lower bound of WAL segments db.active's data depends on
+	activeWALFirst uint64 // first WAL segment db.active depends on
 	immutables     []*immutableMemtable
 	tables         []*sstable.Reader // live SSTables, oldest first
 	closed         bool
-	flushErr       error // sticky error from the background flush goroutine
+	flushErr       error // sticky flush error
 
-	flushCond *sync.Cond // condition over mu; signaled on new immutable work, freed backpressure slots, flush errors, and Close
+	flushCond *sync.Cond // signaled when flush work or queue space changes
 
 	nextWALSegment uint64
 	nextSSTableID  uint64
-	liveSSTables   []uint64 // touched only by the single flush goroutine after Open
+	liveSSTables   []uint64 // only the flush goroutine touches this
 
 	flushWG sync.WaitGroup
 }
 
-// Open opens (or creates) a database in dir: it loads the manifest, replays
-// whatever WAL segments still need it into a fresh memtable, and starts
-// accepting writes into a new WAL segment.
+// Open opens or creates a database in dir and replays the WAL.
 func Open(dir string, opts Options) (*DB, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("store: mkdir %s: %w", dir, err)
@@ -75,15 +61,14 @@ func Open(dir string, opts Options) (*DB, error) {
 		return nil, fmt.Errorf("store: load manifest: %w", err)
 	}
 	liveSSTables := append([]uint64(nil), man.SSTables...)
-	// SSTable ids are assigned in flush order, so ascending id is oldest
-	// to newest, which is the order Get relies on.
+	// Ids grow in flush order, so this is oldest to newest.
 	sort.Slice(liveSSTables, func(i, j int) bool { return liveSSTables[i] < liveSSTables[j] })
 
 	tables, err := openTables(dir, liveSSTables)
 	if err != nil {
 		return nil, err
 	}
-	// Until Open succeeds, any error must release the readers opened above.
+	// Close the readers if Open fails.
 	ok := false
 	defer func() {
 		if !ok {
@@ -153,8 +138,7 @@ func Open(dir string, opts Options) (*DB, error) {
 	return db, nil
 }
 
-// openTables opens a reader for each SSTable id, in the given order. On
-// error it closes any readers it already opened.
+// openTables opens a reader per id, closing them all on error.
 func openTables(dir string, ids []uint64) ([]*sstable.Reader, error) {
 	tables := make([]*sstable.Reader, 0, len(ids))
 	for _, id := range ids {
@@ -178,25 +162,18 @@ func closeTables(tables []*sstable.Reader) error {
 	return errors.Join(errs...)
 }
 
-// Put stores value under key, overwriting any existing value.
+// Put stores value under key.
 func (db *DB) Put(key, value []byte) error {
 	return db.write(wal.RecordPut, key, value)
 }
 
-// Delete records a tombstone for key.
+// Delete writes a tombstone for key.
 func (db *DB) Delete(key []byte) error {
 	return db.write(wal.RecordDelete, key, nil)
 }
 
-// Get returns the most recent value written for key. It checks, newest
-// data first, the active memtable, the pending immutable memtables, and
-// then the live SSTables; the first entry found for key wins, so a
-// tombstone (delete) shadows every older value.
-//
-// Get holds a read lock throughout, including while reading SSTables from
-// disk. That doesn't block writers (which also take a read lock), and it
-// guarantees a flush cannot move a key from memory to disk mid-lookup, or
-// Close release a table's file, while Get is using it.
+// Get returns the newest value for key; a tombstone hides older values.
+// It holds RLock throughout so a flush or Close can't happen mid-lookup.
 func (db *DB) Get(key []byte) ([]byte, bool, error) {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
@@ -240,20 +217,14 @@ func (db *DB) write(typ wal.RecordType, key, value []byte) error {
 	seq := db.seqCounter.Add(1)
 	rec := wal.Record{Seq: seq, Type: typ, Key: key, Value: value}
 
-	// Steps 1-2: append to the WAL and make it durable per the configured
-	// sync mode. This, and the memtable insert below, happen while holding
-	// the read lock: many writers can be in this section concurrently
-	// (which is what lets GroupCommit batch their fsyncs), but rotate()
-	// (which needs the write lock) cannot swap db.active/db.log out from
-	// under an in-flight writer until every current holder finishes.
+	// 1-2: append to the WAL and sync. RLock lets writers batch fsyncs
+	// while stopping rotate from swapping the log underneath them.
 	if err := log.append(rec); err != nil {
 		db.mu.RUnlock()
 		return fmt.Errorf("store: append to wal: %w", err)
 	}
 
-	// Step 3: insert into the active memtable. This only happens after the
-	// append above has returned, so a write is never acknowledged before
-	// it is durable in the log.
+	// 3: insert into the memtable, only after the WAL write is durable.
 	if typ == wal.RecordDelete {
 		active.Delete(seq, key)
 	} else {
@@ -262,10 +233,7 @@ func (db *DB) write(typ wal.RecordType, key, value []byte) error {
 	size := active.Size()
 	db.mu.RUnlock()
 
-	// Step 4: return success. If this write pushed the memtable over its
-	// size threshold, rotate it now; rotation itself is cheap (new file +
-	// pointer swap), so writes don't wait for the actual flush unless the
-	// pending-flush queue is already full (backpressure).
+	// 4: rotate if the memtable is full. Writes only wait if the flush queue is full.
 	if size >= db.opts.MemtableSizeThreshold {
 		if err := db.rotate(); err != nil {
 			return err
@@ -274,10 +242,8 @@ func (db *DB) write(typ wal.RecordType, key, value []byte) error {
 	return nil
 }
 
-// rotate freezes the active memtable and starts a fresh one with a new WAL
-// segment, if the active memtable is still over threshold (a concurrent
-// caller may have already rotated it). It blocks, holding out all new
-// writes, if the immutable queue is already full.
+// rotate freezes the full memtable and starts a new one with a new WAL segment.
+// It blocks all writes while the flush queue is full.
 func (db *DB) rotate() error {
 	db.mu.Lock()
 	defer db.mu.Unlock()
@@ -326,8 +292,7 @@ func (db *DB) rotate() error {
 	return nil
 }
 
-// flushLoop is the single background goroutine that flushes immutable
-// memtables to SSTables, one at a time, oldest first.
+// flushLoop flushes frozen memtables to SSTables, oldest first.
 func (db *DB) flushLoop() {
 	defer db.flushWG.Done()
 
@@ -352,8 +317,7 @@ func (db *DB) flushLoop() {
 			return
 		}
 
-		// Publish the SSTable and retire the memtable in one step, so Get
-		// always finds the flushed keys in exactly one of the two.
+		// Swap in one step so Get sees the keys in exactly one place.
 		db.mu.Lock()
 		db.tables = append(db.tables, table)
 		db.immutables = db.immutables[1:]
@@ -362,13 +326,8 @@ func (db *DB) flushLoop() {
 	}
 }
 
-// flushOne writes imm's memtable out as a new SSTable, records it in the
-// manifest, deletes the WAL segments it made obsolete, and returns a reader
-// for the new table. Only this goroutine ever touches db.nextSSTableID and
-// db.liveSSTables, so no lock is needed for them.
-//
-// On error, imm stays queued (and readable) and the returned error becomes
-// the DB's sticky flushErr.
+// flushOne writes imm to an SSTable, updates the manifest and drops old WAL segments.
+// On error imm stays queued and the error sticks.
 func (db *DB) flushOne(imm *immutableMemtable) (*sstable.Reader, error) {
 	id := db.nextSSTableID
 
@@ -405,11 +364,8 @@ func (db *DB) flushOne(imm *immutableMemtable) (*sstable.Reader, error) {
 		return nil, fmt.Errorf("store: open flushed sstable %d: %w", id, err)
 	}
 
-	// The SSTable and manifest are now durably in place; the WAL segments
-	// this memtable came from are redundant. Failing to delete one doesn't
-	// lose or corrupt anything (recovery already skips segments below
-	// WALSafeDeleteBelow), but it's still surfaced as an error since it
-	// usually indicates a real filesystem problem.
+	// The data is on disk now, so the old WAL segments can go. A failed
+	// delete loses nothing but still points to a disk problem.
 	for seg := imm.firstWALSegment; seg <= imm.lastWALSegment; seg++ {
 		if err := os.Remove(wal.SegmentPath(db.dir, seg)); err != nil && !os.IsNotExist(err) {
 			table.Close()
@@ -420,8 +376,7 @@ func (db *DB) flushOne(imm *immutableMemtable) (*sstable.Reader, error) {
 	return table, nil
 }
 
-// Close stops accepting new writes, waits for any already-queued flushes to
-// finish, fsyncs and closes the active WAL segment, and closes the SSTables.
+// Close stops writes, finishes queued flushes, and closes the WAL and SSTables.
 func (db *DB) Close() error {
 	db.mu.Lock()
 	if db.closed {

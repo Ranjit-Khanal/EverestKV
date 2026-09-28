@@ -1,6 +1,4 @@
-// Package manifest tracks which SSTables are live and which WAL segments
-// have been fully flushed into them, so recovery knows what to trust on
-// disk and what to replay.
+// Package manifest records the live SSTables and which WAL segments are flushed.
 package manifest
 
 import (
@@ -10,31 +8,24 @@ import (
 	"path/filepath"
 )
 
-// fileName is the manifest's fixed on-disk name. It is always replaced
-// atomically in place; there is no versioned history.
+// fileName is the manifest file. It is replaced atomically.
 const fileName = "MANIFEST"
 
-// Manifest is the durable record of database state needed for recovery.
+// Manifest is the state recovery needs.
 type Manifest struct {
-	// SSTables lists the ids of all live SSTables. Any *.sst file on disk
-	// whose id is not in this list is leftover from a crash (e.g. mid-flush
-	// or mid-manifest-update) and must be ignored, not trusted.
+	// SSTables lists live table ids. Any other .sst file is crash leftover.
 	SSTables []uint64 `json:"sstables"`
 
-	// WALSafeDeleteBelow is the smallest WAL segment number that still
-	// needs to be replayed. Every segment with a lower number has had its
-	// data fully captured by an SSTable already listed here and may be
-	// deleted.
+	// WALSafeDeleteBelow is the first segment to replay. Lower ones can be deleted.
 	WALSafeDeleteBelow uint64 `json:"wal_safe_delete_below"`
 }
 
-// Path returns the manifest file's path within dir.
+// Path returns the manifest path in dir.
 func Path(dir string) string {
 	return filepath.Join(dir, fileName)
 }
 
-// Load reads the manifest from dir. A missing manifest is not an error: it
-// means dir holds a fresh database, and a zero-value Manifest is returned.
+// Load reads the manifest. A missing file means a fresh database.
 func Load(dir string) (Manifest, error) {
 	data, err := os.ReadFile(Path(dir))
 	if os.IsNotExist(err) {
@@ -51,9 +42,7 @@ func Load(dir string) (Manifest, error) {
 	return m, nil
 }
 
-// Save atomically replaces the manifest in dir with m: write to a temp
-// file, fsync it, rename over the previous manifest, then fsync the
-// directory so the rename is itself durable.
+// Save atomically replaces the manifest with m.
 func Save(dir string, m Manifest) error {
 	data, err := json.Marshal(m)
 	if err != nil {

@@ -1,7 +1,4 @@
-// Command everestkv-web serves a browser dashboard for EverestKV. It holds no
-// storage logic of its own: every operation the UI offers is issued
-// against the server's HTTP API, through the same internal/client
-// package the CLI uses.
+// Command everestkv-web serves a browser dashboard. It talks to the server through internal/client.
 //
 // Usage:
 //
@@ -56,7 +53,7 @@ func main() {
 	}
 }
 
-// api holds the shared client used to talk to the EverestKV server.
+// api holds the shared server client.
 type api struct {
 	client     *client.Client
 	serverAddr string
@@ -111,16 +108,13 @@ func (a *api) handleGet(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// entry is one key/value pair as shown in the "Stored Keys" panel.
+// entry is one row in the keys panel.
 type entry struct {
 	Key   string `json:"key"`
 	Value string `json:"value"`
 }
 
-// handleKeys lists every key currently stored, with its value, for
-// the dashboard's keys panel. It lists the keys followed by a GET per
-// key — no different from doing the same from the CLI, just batched
-// server-side.
+// handleKeys lists every key with its value, one GET per key.
 func (a *api) handleKeys(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "GET required")
@@ -141,7 +135,7 @@ func (a *api) handleKeys(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if !found {
-			// Deleted between the KEYS snapshot and this GET; skip it.
+			// Deleted since we listed it.
 			continue
 		}
 		entries = append(entries, entry{Key: k, Value: value})
@@ -179,8 +173,7 @@ type commandRequest struct {
 	Line string `json:"line"`
 }
 
-// handleCommand runs an arbitrary command line, the same way the CLI
-// prompt does, so the dashboard console has full parity with the CLI.
+// handleCommand runs a command line like the CLI does.
 func (a *api) handleCommand(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "POST required")
@@ -194,7 +187,7 @@ func (a *api) handleCommand(w http.ResponseWriter, r *http.Request) {
 	if fields := strings.Fields(req.Line); len(fields) > 0 {
 		switch strings.ToUpper(fields[0]) {
 		case "EXIT", "QUIT":
-			// These only leave the CLI prompt; there is nothing to leave here.
+			// Nothing to exit in the browser.
 			writeError(w, http.StatusBadRequest, "EXIT/QUIT is disabled in the dashboard console")
 			return
 		}
@@ -211,8 +204,7 @@ func (a *api) handleCommand(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"reply": reply, "isError": false})
 }
 
-// commandErrorText shows server errors by their message alone, like the
-// CLI's "ERR ..." lines, rather than with the HTTP status appended.
+// commandErrorText shows just the server's message, without the status.
 func commandErrorText(err error) string {
 	var apiErr *client.APIError
 	if errors.As(err, &apiErr) {

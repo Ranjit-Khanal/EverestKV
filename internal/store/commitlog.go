@@ -7,14 +7,11 @@ import (
 	"github.com/Ranjit-Khanal/everestkv/internal/store/wal"
 )
 
-// commitLog wraps a single WAL segment writer with the durability
-// behavior selected by Options.SyncMode.
+// commitLog writes to a WAL segment using the chosen SyncMode.
 type commitLog struct {
 	w segmentWriter
 
-	// mu serializes append+sync in SyncEveryWrite mode. Unused (nil-safe,
-	// simply not taken) in GroupCommit mode, which does its own finer
-	// grained synchronization.
+	// mu serializes append+sync in SyncEveryWrite mode.
 	mu sync.Mutex
 	gc *groupCommit
 }
@@ -35,8 +32,7 @@ func createCommitLog(dir string, segment uint64, mode SyncMode) (*commitLog, err
 	return newCommitLog(w, mode), nil
 }
 
-// append writes rec to the log and blocks until it is durable, per the
-// configured sync mode.
+// append writes rec and waits until it is durable.
 func (cl *commitLog) append(rec wal.Record) error {
 	if cl.gc != nil {
 		return cl.gc.commit(rec)

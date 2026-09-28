@@ -1,6 +1,4 @@
-// Package wal implements the write-ahead commit log: an append-only,
-// segmented, crash-safe record stream that the LSM engine appends to before
-// applying a write to the memtable.
+// Package wal is the write-ahead log. Every write lands here before the memtable.
 package wal
 
 import (
@@ -8,17 +6,17 @@ import (
 	"hash/crc32"
 )
 
-// RecordType distinguishes a value write from a tombstone.
+// RecordType is a put or a delete.
 type RecordType uint8
 
 const (
-	// RecordPut is a normal key/value write.
+	// RecordPut sets a key.
 	RecordPut RecordType = 1
-	// RecordDelete is a tombstone; Value is always empty.
+	// RecordDelete deletes a key; Value is empty.
 	RecordDelete RecordType = 2
 )
 
-// Record is a single logical write in the log.
+// Record is one write in the log.
 type Record struct {
 	Seq   uint64
 	Type  RecordType
@@ -26,10 +24,10 @@ type Record struct {
 	Value []byte
 }
 
-// castagnoli is the CRC-32C table used for record checksums.
+// castagnoli is the CRC-32C table for checksums.
 var castagnoli = crc32.MakeTable(crc32.Castagnoli)
 
-// header sizes, in bytes.
+// Header sizes in bytes.
 const (
 	crcSize    = 4
 	lengthSize = 4
@@ -38,23 +36,21 @@ const (
 	keyLenSize = 4
 	valLenSize = 4
 
-	// bodyFixedSize is the size of the fixed-width fields between length and
-	// the variable-length key/value payloads: seq + type + keyLen + valLen.
+	// bodyFixedSize is seq + type + keyLen + valLen.
 	bodyFixedSize = seqSize + typeSize + keyLenSize + valLenSize
 )
 
-// encode serializes r as:
+// encode writes r as:
 //
 //	[crc32 uint32][length uint32][seq uint64][type uint8][keyLen uint32][key][valLen uint32][value]
 //
-// crc32 (Castagnoli) covers everything after the crc field itself, i.e.
-// length through value.
+// The CRC covers everything after itself.
 func encode(r Record) []byte {
 	bodyLen := bodyFixedSize + len(r.Key) + len(r.Value)
 
 	buf := make([]byte, crcSize+lengthSize+bodyLen)
 
-	// length + body, in place, starting after the crc field.
+	// Write length and body after the CRC.
 	rest := buf[crcSize:]
 	binary.LittleEndian.PutUint32(rest[:lengthSize], uint32(bodyLen))
 
@@ -77,11 +73,7 @@ func encode(r Record) []byte {
 	return buf
 }
 
-// decodeBody parses the seq/type/keyLen/key/valLen/value fields out of a
-// buffer already verified against its checksum. It returns false if the
-// encoded lengths don't fit the buffer, which indicates corruption that
-// happened to still pass the checksum (defensive; should not normally
-// happen).
+// decodeBody parses a checksummed body. It returns false if the lengths don't fit.
 func decodeBody(body []byte) (Record, bool) {
 	if len(body) < bodyFixedSize {
 		return Record{}, false
