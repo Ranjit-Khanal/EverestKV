@@ -1,9 +1,8 @@
-// Command everestkv runs the EverestKV server: a RESP2-speaking TCP
-// server listening on :6379, so redis-cli and other Redis clients can talk
-// to it directly.
+// Command everestkv runs the EverestKV server: an HTTP key-value API
+// listening on :8379, so curl or any HTTP client can talk to it directly.
 //
 // On SIGINT or SIGTERM it shuts down gracefully: it stops accepting
-// connections and waits up to shutdownTimeout for in-flight commands to
+// connections and waits up to shutdownTimeout for in-flight requests to
 // finish. A second signal during that wait exits immediately.
 package main
 
@@ -37,7 +36,7 @@ func main() {
 	// Restore default signal handling so a second signal kills the process.
 	stop()
 
-	log.Printf("shutting down (waiting up to %s for in-flight commands; signal again to force)", shutdownTimeout)
+	log.Printf("shutting down (waiting up to %s for in-flight requests; signal again to force)", shutdownTimeout)
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {

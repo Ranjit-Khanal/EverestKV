@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sort"
 	"sync"
 	"sync/atomic"
 
@@ -27,8 +28,8 @@ type immutableMemtable struct {
 
 // DB is an LSM-tree key-value store: writes go to a write-ahead log and an
 // in-memory memtable; the memtable is periodically flushed to an immutable,
-// sorted SSTable on disk. Reading back from flushed SSTables is not
-// implemented yet.
+// sorted SSTable on disk. Reads check the memtables first, then the
+// SSTables from newest to oldest.
 type DB struct {
 	dir  string
 	opts Options
@@ -36,8 +37,9 @@ type DB struct {
 	seqCounter atomic.Uint64
 
 	// mu guards active/log (read via RLock by writers, swapped via Lock by
-	// rotate) and immutables/closed/flushErr (read/written via Lock by
-	// writers, rotate, and the flush goroutine). Using one RWMutex for both
+	// rotate), immutables/closed/flushErr (read/written via Lock by
+	// writers, rotate, and the flush goroutine), and tables (read via
+	// RLock by Get, appended via Lock by the flush goroutine). Using one RWMutex for both
 	// lets writers proceed concurrently (RLock) while still giving rotate
 	// and Close an exclusive, consistent view when they need to swap state
 	// or drain in-flight writers.
@@ -46,6 +48,7 @@ type DB struct {
 	log            *commitLog
 	activeWALFirst uint64 // lower bound of WAL segments db.active's data depends on
 	immutables     []*immutableMemtable
+	tables         []*sstable.Reader // live SSTables, oldest first
 	closed         bool
 	flushErr       error // sticky error from the background flush goroutine
 
@@ -72,6 +75,21 @@ func Open(dir string, opts Options) (*DB, error) {
 		return nil, fmt.Errorf("store: load manifest: %w", err)
 	}
 	liveSSTables := append([]uint64(nil), man.SSTables...)
+	// SSTable ids are assigned in flush order, so ascending id is oldest
+	// to newest, which is the order Get relies on.
+	sort.Slice(liveSSTables, func(i, j int) bool { return liveSSTables[i] < liveSSTables[j] })
+
+	tables, err := openTables(dir, liveSSTables)
+	if err != nil {
+		return nil, err
+	}
+	// Until Open succeeds, any error must release the readers opened above.
+	ok := false
+	defer func() {
+		if !ok {
+			closeTables(tables)
+		}
+	}()
 
 	segments, err := findWALSegments(dir)
 	if err != nil {
@@ -111,13 +129,7 @@ func Open(dir string, opts Options) (*DB, error) {
 
 	nextSSTableID := uint64(1)
 	if len(liveSSTables) > 0 {
-		max := liveSSTables[0]
-		for _, id := range liveSSTables {
-			if id > max {
-				max = id
-			}
-		}
-		nextSSTableID = max + 1
+		nextSSTableID = liveSSTables[len(liveSSTables)-1] + 1
 	}
 
 	db := &DB{
@@ -126,6 +138,7 @@ func Open(dir string, opts Options) (*DB, error) {
 		active:         active,
 		log:            log,
 		activeWALFirst: activeWALFirst,
+		tables:         tables,
 		nextWALSegment: nextSeg + 1,
 		nextSSTableID:  nextSSTableID,
 		liveSSTables:   liveSSTables,
@@ -136,7 +149,33 @@ func Open(dir string, opts Options) (*DB, error) {
 	db.flushWG.Add(1)
 	go db.flushLoop()
 
+	ok = true
 	return db, nil
+}
+
+// openTables opens a reader for each SSTable id, in the given order. On
+// error it closes any readers it already opened.
+func openTables(dir string, ids []uint64) ([]*sstable.Reader, error) {
+	tables := make([]*sstable.Reader, 0, len(ids))
+	for _, id := range ids {
+		r, err := sstable.Open(dir, id)
+		if err != nil {
+			closeTables(tables)
+			return nil, fmt.Errorf("store: open sstable %d: %w", id, err)
+		}
+		tables = append(tables, r)
+	}
+	return tables, nil
+}
+
+func closeTables(tables []*sstable.Reader) error {
+	var errs []error
+	for _, r := range tables {
+		if err := r.Close(); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // Put stores value under key, overwriting any existing value.
@@ -149,11 +188,15 @@ func (db *DB) Delete(key []byte) error {
 	return db.write(wal.RecordDelete, key, nil)
 }
 
-// Get returns the most recent value written for key, consulting the active
-// and any pending immutable memtables. It does not yet consult flushed
-// SSTables, so a key whose only surviving copy is on disk will incorrectly
-// report not found; this is a known, temporary limitation until the read
-// path is implemented.
+// Get returns the most recent value written for key. It checks, newest
+// data first, the active memtable, the pending immutable memtables, and
+// then the live SSTables; the first entry found for key wins, so a
+// tombstone (delete) shadows every older value.
+//
+// Get holds a read lock throughout, including while reading SSTables from
+// disk. That doesn't block writers (which also take a read lock), and it
+// guarantees a flush cannot move a key from memory to disk mid-lookup, or
+// Close release a table's file, while Get is using it.
 func (db *DB) Get(key []byte) ([]byte, bool, error) {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
@@ -166,6 +209,15 @@ func (db *DB) Get(key []byte) ([]byte, bool, error) {
 	}
 	for i := len(db.immutables) - 1; i >= 0; i-- {
 		if v, tomb, found := db.immutables[i].mt.Get(key); found {
+			return v, !tomb, nil
+		}
+	}
+	for i := len(db.tables) - 1; i >= 0; i-- {
+		v, tomb, found, err := db.tables[i].Get(key)
+		if err != nil {
+			return nil, false, fmt.Errorf("store: get: %w", err)
+		}
+		if found {
 			return v, !tomb, nil
 		}
 	}
@@ -291,7 +343,8 @@ func (db *DB) flushLoop() {
 		imm := db.immutables[0]
 		db.mu.Unlock()
 
-		if err := db.flushOne(imm); err != nil {
+		table, err := db.flushOne(imm)
+		if err != nil {
 			db.mu.Lock()
 			db.flushErr = err
 			db.flushCond.Broadcast()
@@ -299,7 +352,10 @@ func (db *DB) flushLoop() {
 			return
 		}
 
+		// Publish the SSTable and retire the memtable in one step, so Get
+		// always finds the flushed keys in exactly one of the two.
 		db.mu.Lock()
+		db.tables = append(db.tables, table)
 		db.immutables = db.immutables[1:]
 		db.flushCond.Broadcast()
 		db.mu.Unlock()
@@ -307,15 +363,18 @@ func (db *DB) flushLoop() {
 }
 
 // flushOne writes imm's memtable out as a new SSTable, records it in the
-// manifest, and deletes the WAL segments it made obsolete. Only this
-// goroutine ever touches db.nextSSTableID and db.liveSSTables, so no lock
-// is needed for them.
-func (db *DB) flushOne(imm *immutableMemtable) error {
+// manifest, deletes the WAL segments it made obsolete, and returns a reader
+// for the new table. Only this goroutine ever touches db.nextSSTableID and
+// db.liveSSTables, so no lock is needed for them.
+//
+// On error, imm stays queued (and readable) and the returned error becomes
+// the DB's sticky flushErr.
+func (db *DB) flushOne(imm *immutableMemtable) (*sstable.Reader, error) {
 	id := db.nextSSTableID
 
 	w, err := sstable.NewWriter(db.dir, id)
 	if err != nil {
-		return fmt.Errorf("store: create sstable %d: %w", id, err)
+		return nil, fmt.Errorf("store: create sstable %d: %w", id, err)
 	}
 
 	it := imm.mt.NewIterator()
@@ -323,11 +382,11 @@ func (db *DB) flushOne(imm *immutableMemtable) error {
 		err := w.Write(sstable.Entry{Key: it.Key(), Value: it.Value(), Tombstone: it.Tombstone()})
 		if err != nil {
 			w.Abort()
-			return fmt.Errorf("store: write sstable %d: %w", id, err)
+			return nil, fmt.Errorf("store: write sstable %d: %w", id, err)
 		}
 	}
 	if _, err := w.Finish(); err != nil {
-		return fmt.Errorf("store: finish sstable %d: %w", id, err)
+		return nil, fmt.Errorf("store: finish sstable %d: %w", id, err)
 	}
 
 	db.nextSSTableID++
@@ -338,7 +397,12 @@ func (db *DB) flushOne(imm *immutableMemtable) error {
 		WALSafeDeleteBelow: imm.lastWALSegment + 1,
 	})
 	if err != nil {
-		return fmt.Errorf("store: save manifest: %w", err)
+		return nil, fmt.Errorf("store: save manifest: %w", err)
+	}
+
+	table, err := sstable.Open(db.dir, id)
+	if err != nil {
+		return nil, fmt.Errorf("store: open flushed sstable %d: %w", id, err)
 	}
 
 	// The SSTable and manifest are now durably in place; the WAL segments
@@ -348,15 +412,16 @@ func (db *DB) flushOne(imm *immutableMemtable) error {
 	// usually indicates a real filesystem problem.
 	for seg := imm.firstWALSegment; seg <= imm.lastWALSegment; seg++ {
 		if err := os.Remove(wal.SegmentPath(db.dir, seg)); err != nil && !os.IsNotExist(err) {
-			return fmt.Errorf("store: delete wal segment %d: %w", seg, err)
+			table.Close()
+			return nil, fmt.Errorf("store: delete wal segment %d: %w", seg, err)
 		}
 	}
 
-	return nil
+	return table, nil
 }
 
 // Close stops accepting new writes, waits for any already-queued flushes to
-// finish, and fsyncs and closes the active WAL segment.
+// finish, fsyncs and closes the active WAL segment, and closes the SSTables.
 func (db *DB) Close() error {
 	db.mu.Lock()
 	if db.closed {
@@ -379,6 +444,10 @@ func (db *DB) Close() error {
 	if err := db.log.close(); err != nil {
 		errs = append(errs, err)
 	}
+	if err := closeTables(db.tables); err != nil {
+		errs = append(errs, fmt.Errorf("store: close sstables: %w", err))
+	}
+	db.tables = nil
 	if db.flushErr != nil {
 		errs = append(errs, db.flushErr)
 	}
