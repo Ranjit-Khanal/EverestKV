@@ -11,13 +11,16 @@ including `curl`.
 | `GET`    | `/v1/keys`     | `200`, `{"keys": ["a", "b"]}`, sorted     |         |
 | `GET`    | `/v1/kv/{key}` | `200`, the raw value as the body (`application/octet-stream`) | `404` if the key is missing |
 | `HEAD`   | `/v1/kv/{key}` | `200` if the key exists                   | `404`   |
-| `PUT`    | `/v1/kv/{key}` | `204`. The request body is the value, stored as-is. Overwrites any existing value. | `413` if the body is over 32 MiB |
+| `PUT`    | `/v1/kv/{key}` | `204`. The request body is the value, stored as-is. Overwrites any existing value and its TTL. Add `?ttl=N` to make the key expire after `N` seconds. | `413` if the body is over 32 MiB, `400` if `ttl` is not a positive integer |
 | `DELETE` | `/v1/kv/{key}` | `204`                                     | `404` if the key did not exist |
+| `GET`    | `/v1/ttl/{key}` | `200`, `{"ttl": N}`: seconds left (rounded up), or `-1` if the key never expires | `404` if the key is missing |
 
 - **Keys** are everything after `/v1/kv/`, percent-decoded. A key can contain any byte, including
   `/`, spaces and `?`, as long as the client percent-encodes it (for example, key `a/b` is
   `/v1/kv/a%2Fb`). The path is not cleaned, so `a//b` and `x/../y` are stored as written. The
   empty key is rejected with `400`.
+- **Expiry**: once a key's TTL runs out it is gone. `GET`, `/v1/keys`, `/v1/ttl` and `DELETE`
+  all treat it as missing. A `PUT` without `ttl` makes the key permanent again.
 - **Values** are raw bytes, not JSON, so binary data round-trips unchanged.
 - **Errors** are JSON: `{"error": "key not found"}`. Other codes: `400` for a malformed key
   escape, `405` (with an `Allow` header) for an unsupported method, `404` for unknown paths.
@@ -26,6 +29,9 @@ including `curl`.
 
 ```console
 $ curl -X PUT --data-binary 'Kathmandu' localhost:8379/v1/kv/city
+$ curl -X PUT --data-binary 'abc123' 'localhost:8379/v1/kv/session?ttl=60'
+$ curl localhost:8379/v1/ttl/session
+{"ttl":60}
 $ curl localhost:8379/v1/kv/city
 Kathmandu
 $ curl -i localhost:8379/v1/kv/missing
@@ -42,7 +48,7 @@ Use `--data-binary`, not `-d`. `curl -d` strips newlines from the value.
 
 ### Limitations
 
-- There is no TTL, no conditional write (`If-Match`), no pattern matching on `/v1/keys`, and no
+- There is no conditional write (`If-Match`), no pattern matching on `/v1/keys`, and no
   authentication. See [SECURITY.md](../SECURITY.md).
 - Data is held in memory and is **lost when the server restarts**. See
   [storage-engine.md](storage-engine.md) for the persistent engine in progress.
@@ -55,8 +61,9 @@ one HTTP request. Command names are case-insensitive.
 | Command | Syntax          | Request                  | Output |
 |---------|-----------------|--------------------------|--------|
 | `PING`  | `PING`          | `GET /v1/ping`           | `PONG` |
-| `SET`   | `SET key value` | `PUT /v1/kv/key`         | `OK` |
+| `SET`   | `SET key value [EX seconds]` | `PUT /v1/kv/key[?ttl=seconds]` | `OK` |
 | `GET`   | `GET key`       | `GET /v1/kv/key`         | The value, or `(nil)` if the key is missing |
+| `TTL`   | `TTL key`       | `GET /v1/ttl/key`        | Seconds left, `-1` if the key never expires, or `-2` if it is missing |
 | `DEL`   | `DEL key`       | `DELETE /v1/kv/key`      | `1` if the key existed, otherwise `0` |
 | `KEYS`  | `KEYS *`        | `GET /v1/keys`           | One key per line, sorted, or `(empty array)`. Only the literal pattern `*` is accepted. |
 | `EXIT` / `QUIT` | `EXIT`  | none                     | Leaves the CLI without contacting the server |
@@ -67,6 +74,8 @@ Bad command lines are rejected by the client before anything is sent:
 ERR unknown command 'foo'
 ERR wrong number of arguments for 'get' command
 ERR KEYS only supports the '*' pattern for now
+ERR syntax error
+ERR invalid expire time in 'set' command
 ```
 
 Each line is split on whitespace, so a key or value containing spaces can't be set from the CLI.

@@ -10,8 +10,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -116,9 +118,14 @@ func (c *Client) Get(key string) (value string, found bool, err error) {
 	}
 }
 
-// Set stores value under key.
-func (c *Client) Set(key, value string) error {
-	res, err := c.do(http.MethodPut, keyPath(key), strings.NewReader(value))
+// Set stores value under key. A ttl of 0 means the key never expires.
+func (c *Client) Set(key, value string, ttl time.Duration) error {
+	path := keyPath(key)
+	if ttl > 0 {
+		secs := (ttl + time.Second - 1) / time.Second
+		path += "?ttl=" + strconv.FormatInt(int64(secs), 10)
+	}
+	res, err := c.do(http.MethodPut, path, strings.NewReader(value))
 	if err != nil {
 		return err
 	}
@@ -127,6 +134,32 @@ func (c *Client) Set(key, value string) error {
 		return apiError(res)
 	}
 	return nil
+}
+
+// TTL returns the time left before key expires, or 0 if it never expires.
+func (c *Client) TTL(key string) (remaining time.Duration, found bool, err error) {
+	res, err := c.do(http.MethodGet, "/v1/ttl/"+url.PathEscape(key), nil)
+	if err != nil {
+		return 0, false, err
+	}
+	defer res.Body.Close()
+	switch res.StatusCode {
+	case http.StatusOK:
+		var body struct {
+			TTL int64 `json:"ttl"`
+		}
+		if err := json.NewDecoder(res.Body).Decode(&body); err != nil {
+			return 0, false, fmt.Errorf("client: decoding ttl: %w", err)
+		}
+		if body.TTL < 0 {
+			return 0, true, nil
+		}
+		return time.Duration(body.TTL) * time.Second, true, nil
+	case http.StatusNotFound:
+		return 0, false, nil
+	default:
+		return 0, false, apiError(res)
+	}
 }
 
 // Delete removes key and reports whether it existed.
@@ -174,10 +207,13 @@ func (c *Client) Execute(line string) (string, error) {
 		return "", &CommandError{"ERR empty command"}
 	}
 	name, args := strings.ToUpper(fields[0]), fields[1:]
-	nargs := map[string]int{"PING": 0, "GET": 1, "SET": 2, "DEL": 1, "KEYS": 1}
+	nargs := map[string]int{"PING": 0, "GET": 1, "SET": 2, "DEL": 1, "KEYS": 1, "TTL": 1}
 	want, ok := nargs[name]
 	if !ok {
 		return "", &CommandError{fmt.Sprintf("ERR unknown command '%s'", strings.ToLower(fields[0]))}
+	}
+	if name == "SET" && len(args) == 4 { // SET key value EX seconds
+		want = 4
 	}
 	if len(args) != want {
 		return "", &CommandError{fmt.Sprintf("ERR wrong number of arguments for '%s' command", strings.ToLower(name))}
@@ -193,10 +229,32 @@ func (c *Client) Execute(line string) (string, error) {
 		}
 		return v, nil
 	case "SET":
-		if err := c.Set(args[0], args[1]); err != nil {
+		var ttl time.Duration
+		if len(args) == 4 {
+			if !strings.EqualFold(args[2], "EX") {
+				return "", &CommandError{"ERR syntax error"}
+			}
+			secs, err := strconv.ParseInt(args[3], 10, 64)
+			if err != nil || secs <= 0 || secs > math.MaxInt64/int64(time.Second) {
+				return "", &CommandError{"ERR invalid expire time in 'set' command"}
+			}
+			ttl = time.Duration(secs) * time.Second
+		}
+		if err := c.Set(args[0], args[1], ttl); err != nil {
 			return "", err
 		}
 		return "OK", nil
+	case "TTL": // -2 missing, -1 no expiry, else seconds left
+		remaining, found, err := c.TTL(args[0])
+		switch {
+		case err != nil:
+			return "", err
+		case !found:
+			return "-2", nil
+		case remaining == 0:
+			return "-1", nil
+		}
+		return strconv.FormatInt(int64(remaining/time.Second), 10), nil
 	case "DEL":
 		existed, err := c.Delete(args[0])
 		if err != nil {

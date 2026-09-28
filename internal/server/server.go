@@ -6,10 +6,11 @@
 //	GET    /v1/ping        200 "PONG"
 //	GET    /v1/keys        200 {"keys": [...]}, sorted
 //	GET    /v1/kv/{key}    200 raw value, or 404
-//	PUT    /v1/kv/{key}    204; the request body is the value
+//	PUT    /v1/kv/{key}    204; the body is the value, ?ttl=N sets a TTL in seconds
 //	DELETE /v1/kv/{key}    204, or 404 if the key did not exist
+//	GET    /v1/ttl/{key}   200 {"ttl": N}, -1 if no expiry, or 404
 //
-// Keys are the rest of the path after /v1/kv/, percent-decoded, so they
+// Keys are the rest of the path after the prefix, percent-decoded, so they
 // may contain any byte (including "/") as long as the client escapes it.
 // Values are raw bytes, not JSON. Errors are {"error": "..."}.
 package server
@@ -20,10 +21,12 @@ import (
 	"errors"
 	"io"
 	"log"
+	"math"
 	"net"
 	"net/http"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -36,7 +39,10 @@ var ErrServerClosed = http.ErrServerClosed
 // MaxValueBytes caps the size of a PUT body.
 const MaxValueBytes = 32 << 20
 
-const kvPrefix = "/v1/kv/"
+const (
+	kvPrefix  = "/v1/kv/"
+	ttlPrefix = "/v1/ttl/"
+)
 
 // Config holds server listen options.
 type Config struct {
@@ -57,14 +63,14 @@ type Server struct {
 
 // New returns a Server with the given config and an empty in-memory store.
 func New(cfg Config) *Server {
-	s := &Server{cfg: cfg, store: store.New()}
+	s := &Server{cfg: cfg, store: store.NewStore()}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/ping", s.handlePing)
 	mux.HandleFunc("GET /v1/keys", s.handleKeys)
 
 	s.http = &http.Server{
-		Handler:           s.routeKV(mux),
+		Handler:           s.routeKeys(mux),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	return s
@@ -87,14 +93,7 @@ func (s *Server) Serve(ln net.Listener) error {
 	return s.http.Serve(ln)
 }
 
-// Shutdown gracefully stops the server. It stops accepting connections,
-// closes idle keep-alive connections right away, and waits for in-flight
-// requests to finish. It returns nil once every connection is closed. If
-// ctx ends first, it force-closes the remaining connections and returns
-// ctx.Err(); their handlers may still be finishing when it returns.
-//
-// When Shutdown returns nil, no request is running, so it is safe to
-// close the store.
+// Shutdown gracefully stops the server.
 func (s *Server) Shutdown(ctx context.Context) error {
 	err := s.http.Shutdown(ctx)
 	if err != nil {
@@ -103,12 +102,16 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	return err
 }
 
-// routeKV sends /v1/kv/ requests to handleKV and everything else to next.
-// It bypasses ServeMux for keys because ServeMux cleans the decoded path
-// and redirects, which would silently rewrite keys like "a//b" or "x/../y".
-func (s *Server) routeKV(next http.Handler) http.Handler {
+// routeKeys routes /v1/kv/ and /v1/ttl/ itself, since ServeMux would rewrite keys like "a//b".
+func (s *Server) routeKeys(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		escaped, ok := strings.CutPrefix(r.URL.EscapedPath(), kvPrefix)
+		path := r.URL.EscapedPath()
+		handle := s.handleKV
+		escaped, ok := strings.CutPrefix(path, kvPrefix)
+		if !ok {
+			handle = s.handleTTL
+			escaped, ok = strings.CutPrefix(path, ttlPrefix)
+		}
 		if !ok {
 			next.ServeHTTP(w, r)
 			return
@@ -122,7 +125,7 @@ func (s *Server) routeKV(next http.Handler) http.Handler {
 			writeError(w, http.StatusBadRequest, "empty key")
 			return
 		}
-		s.handleKV(w, r, key)
+		handle(w, r, key)
 	})
 }
 
@@ -138,6 +141,15 @@ func (s *Server) handleKV(w http.ResponseWriter, r *http.Request, key string) {
 		io.WriteString(w, val)
 
 	case http.MethodPut:
+		var ttl time.Duration
+		if q := r.URL.Query().Get("ttl"); q != "" {
+			secs, err := strconv.ParseInt(q, 10, 64)
+			if err != nil || secs <= 0 || secs > math.MaxInt64/int64(time.Second) {
+				writeError(w, http.StatusBadRequest, "ttl must be a positive number of seconds")
+				return
+			}
+			ttl = time.Duration(secs) * time.Second
+		}
 		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, MaxValueBytes))
 		if err != nil {
 			var tooBig *http.MaxBytesError
@@ -148,7 +160,7 @@ func (s *Server) handleKV(w http.ResponseWriter, r *http.Request, key string) {
 			writeError(w, http.StatusBadRequest, "reading body: "+err.Error())
 			return
 		}
-		s.store.Set(key, string(body))
+		s.store.Set(key, string(body), ttl)
 		w.WriteHeader(http.StatusNoContent)
 
 	case http.MethodDelete:
@@ -162,6 +174,25 @@ func (s *Server) handleKV(w http.ResponseWriter, r *http.Request, key string) {
 		w.Header().Set("Allow", "GET, HEAD, PUT, DELETE")
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
+}
+
+func (s *Server) handleTTL(w http.ResponseWriter, r *http.Request, key string) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		w.Header().Set("Allow", "GET, HEAD")
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	remaining, ok := s.store.TTL(key)
+	if !ok {
+		writeError(w, http.StatusNotFound, "key not found")
+		return
+	}
+	secs := int64(-1)
+	if remaining > 0 {
+		// Round up so a live key never reports 0.
+		secs = int64((remaining + time.Second - 1) / time.Second)
+	}
+	writeJSON(w, http.StatusOK, map[string]int64{"ttl": secs})
 }
 
 func (s *Server) handlePing(w http.ResponseWriter, _ *http.Request) {

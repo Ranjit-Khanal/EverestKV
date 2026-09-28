@@ -8,6 +8,7 @@ const (
 	CommandGet  Command = "GET"
 	CommandSet  Command = "SET"
 	CommandDel  Command = "DEL"
+	CommandTTL  Command = "TTL"
 	CommandKeys Command = "KEYS"
 	CommandQuit Command = "QUIT" // local only — same as EXIT
 	CommandExit Command = "EXIT" // local only — closes CLI without talking to the server

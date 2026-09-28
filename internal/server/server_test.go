@@ -65,7 +65,7 @@ func TestKVRoundTrip(t *testing.T) {
 		"bin":        "\x00\xff\r\n",
 	}
 	for k, v := range pairs {
-		if err := c.Set(k, v); err != nil {
+		if err := c.Set(k, v, 0); err != nil {
 			t.Fatalf("Set(%q): %v", k, err)
 		}
 	}
@@ -95,6 +95,55 @@ func TestKVRoundTrip(t *testing.T) {
 	}
 }
 
+func TestTTL(t *testing.T) {
+	_, addr, _ := startServer(t)
+	c := client.New(addr)
+
+	if err := c.Set("temp", "v", 2*time.Second); err != nil {
+		t.Fatalf("Set with TTL: %v", err)
+	}
+	if err := c.Set("perm", "v", 0); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+
+	for _, tt := range []struct{ line, want string }{
+		{"TTL temp", "2"},
+		{"TTL perm", "-1"},
+		{"TTL missing", "-2"},
+		{"SET a/b v EX 100", "OK"},
+		{"TTL a/b", "100"},
+	} {
+		if got, err := c.Execute(tt.line); err != nil || got != tt.want {
+			t.Fatalf("Execute(%q) = %q, %v; want %q", tt.line, got, err, tt.want)
+		}
+	}
+	for _, line := range []string{"SET k v EX 0", "SET k v EX x", "SET k v PX 1", "SET k v EX"} {
+		var cmdErr *client.CommandError
+		if _, err := c.Execute(line); !errors.As(err, &cmdErr) {
+			t.Fatalf("Execute(%q) err = %v, want *CommandError", line, err)
+		}
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		_, found, err := c.Get("temp")
+		if err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		if !found {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("temp did not expire")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	keys, err := c.Keys()
+	if err != nil || !slices.Equal(keys, []string{"a/b", "perm"}) {
+		t.Fatalf("Keys = %q, %v; want [a/b perm]", keys, err)
+	}
+}
+
 func TestBadRequests(t *testing.T) {
 	_, addr, _ := startServer(t)
 	base := "http://" + addr
@@ -108,6 +157,12 @@ func TestBadRequests(t *testing.T) {
 		{http.MethodGet, "/v1/kv/%zz", nil, http.StatusBadRequest},
 		{http.MethodPost, "/v1/kv/k", nil, http.StatusMethodNotAllowed},
 		{http.MethodPut, "/v1/kv/big", strings.NewReader(strings.Repeat("x", MaxValueBytes+1)), http.StatusRequestEntityTooLarge},
+		{http.MethodPut, "/v1/kv/k?ttl=0", nil, http.StatusBadRequest},
+		{http.MethodPut, "/v1/kv/k?ttl=-5", nil, http.StatusBadRequest},
+		{http.MethodPut, "/v1/kv/k?ttl=1.5", nil, http.StatusBadRequest},
+		{http.MethodPut, "/v1/kv/k?ttl=99999999999999", nil, http.StatusBadRequest},
+		{http.MethodDelete, "/v1/ttl/k", nil, http.StatusMethodNotAllowed},
+		{http.MethodGet, "/v1/ttl/", nil, http.StatusBadRequest},
 		{http.MethodPost, "/v1/keys", nil, http.StatusMethodNotAllowed},
 		{http.MethodGet, "/nope", nil, http.StatusNotFound},
 	}
@@ -160,7 +215,7 @@ func TestExecute(t *testing.T) {
 func TestShutdownClosesIdleClients(t *testing.T) {
 	srv, addr, errc := startServer(t)
 	c := client.New(addr)
-	if err := c.Set("k", "v"); err != nil { // leaves an idle keep-alive connection
+	if err := c.Set("k", "v", 0); err != nil { // leaves an idle keep-alive connection
 		t.Fatalf("Set: %v", err)
 	}
 

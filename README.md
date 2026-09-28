@@ -65,13 +65,14 @@ curl localhost:8379/v1/kv/greeting
 | Request                | Response                                   |
 |------------------------|--------------------------------------------|
 | `GET /v1/ping`         | `200 PONG`                                 |
-| `PUT /v1/kv/{key}`     | `204`; the request body is the value       |
+| `PUT /v1/kv/{key}`     | `204`; the request body is the value. `?ttl=N` expires it after N seconds |
 | `GET /v1/kv/{key}`     | `200` with the raw value, or `404`         |
 | `DELETE /v1/kv/{key}`  | `204`, or `404` if the key did not exist   |
+| `GET /v1/ttl/{key}`    | `200 {"ttl": N}`, `-1` if no expiry, or `404` |
 | `GET /v1/keys`         | `200 {"keys": [...]}`, sorted              |
 
-The CLI accepts `PING`, `SET`, `GET`, `DEL`, `KEYS *` and `EXIT` and turns each one into one of
-these requests. See [docs/commands.md](docs/commands.md) for key encoding, status codes, limits,
+The CLI accepts `PING`, `SET` (with optional `EX seconds`), `GET`, `TTL`, `DEL`, `KEYS *` and
+`EXIT` and turns each one into one of these requests. See [docs/commands.md](docs/commands.md) for key encoding, status codes, limits,
 and the CLI commands.
 
 ## Tools
@@ -251,7 +252,7 @@ Done:
 Next, toward a minimum useful KV:
 
 - [ ] Connect the server to the LSM engine (data directory flag, `DB.Close` on shutdown)
-- [ ] TTL on keys
+- [x] TTL on keys
 - [ ] Compaction
 - [ ] Authentication, TLS, and a configurable listen address
 

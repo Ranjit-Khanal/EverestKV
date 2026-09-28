@@ -168,7 +168,7 @@ func (a *api) handleSet(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "'key' is required")
 		return
 	}
-	if err := a.client.Set(req.Key, req.Value); err != nil {
+	if err := a.client.Set(req.Key, req.Value, 0); err != nil {
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}

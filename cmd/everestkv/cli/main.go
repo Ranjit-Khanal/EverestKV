@@ -29,8 +29,8 @@ func main() {
 	}
 
 	fmt.Printf("Connected to EverestKv at %s\n", *addr)
-	fmt.Printf("Type your commands (e.g., %s, %s k v, %s k, %s k, %s *) or %s to leave\n",
-		CommandPing, CommandSet, CommandGet, CommandDel, CommandKeys, CommandExit)
+	fmt.Printf("Type your commands (e.g., %s, %s k v [EX secs], %s k, %s k, %s k, %s *) or %s to leave\n",
+		CommandPing, CommandSet, CommandGet, CommandTTL, CommandDel, CommandKeys, CommandExit)
 
 	scanner := bufio.NewScanner(os.Stdin)
 	for {
