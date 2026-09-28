@@ -6,7 +6,7 @@ on-disk engine specifically, see [storage-engine.md](storage-engine.md).
 
 ## Design principles
 
-- **Layered, one-way dependencies.** HTTP → storage. Lower layers never import higher ones:
+- **Layered, one-way dependencies.** HTTP → service → storage. Lower layers never import higher ones:
   `internal/store` knows nothing about HTTP.
 - **Standard library only.** `go.mod` has no dependencies. New modules need a strong justification.
 - **Go's concurrency model, not a hand-rolled event loop.** `net/http` runs one goroutine per
@@ -21,7 +21,9 @@ cmd/everestkv/            main: server binary (everestkv)
 cmd/everestkv/cli/        main: interactive client (everestkv-cli)
 cmd/everestkv/web/        main: HTTP dashboard (everestkv-web), UI embedded via go:embed
 
-internal/server/          HTTP API: routes, handlers, graceful shutdown
+internal/server/          HTTP server: listen, graceful shutdown
+internal/http/handlers/   HTTP API: routes, handlers, status codes
+internal/service/         Business rules: key validation, TTL rules, not-found errors
 internal/client/          HTTP client shared by the CLI and dashboard
 internal/store/           Storage: in-memory Store (used today) + LSM DB engine (in progress)
   wal/                    Segmented, checksummed write-ahead log
@@ -37,7 +39,9 @@ internal/store/           Storage: in-memory Store (used today) + LSM DB engine 
 | Package             | Owns                                    | Must not own                         |
 |---------------------|-----------------------------------------|--------------------------------------|
 | `cmd/*`             | Flag parsing, wiring, `main`            | Business logic                       |
-| `internal/server`   | Routes, request validation, status codes | Storage internals                   |
+| `internal/server`   | Listening, timeouts, shutdown           | Routes, storage internals            |
+| `internal/http/handlers` | Routes, request parsing, status codes | Business rules, storage     |
+| `internal/service`  | Key and TTL rules, domain errors        | HTTP, storage internals              |
 | `internal/client`   | Turning operations into HTTP requests, CLI command-line parsing | Storage |
 | `internal/store`    | Keys, values, durability                | HTTP                                 |
 
@@ -67,19 +71,22 @@ What happens when a client sends `PUT /v1/kv/greeting` with body `namaste`:
 client ──HTTP──▶ http.Server                   one goroutine per connection (net/http)
                     │
                     ▼
-                routeKV                        path starts with /v1/kv/? → key = "greeting"
+                routeKeys                      path starts with /v1/kv/ or /v1/ttl/? → key = "greeting"
                     │                          (otherwise → ServeMux: /v1/ping, /v1/keys)
                     ▼
-                handleKV                       switch on method
+                Handlers.KV                    switch on method
                     │  PUT: read body, capped at MaxValueBytes (32 MiB)
                     ▼
-                store.Set("greeting", "namaste")
+                service.KV.Set                 validates key and TTL
+                    │
+                    ▼
+                store.Set("greeting", "namaste", ttl)
                     │
                     ▼
                 204 No Content
 ```
 
-`routeKV` reads the key from the escaped path itself instead of using a `ServeMux` pattern.
+`routeKeys` (in `internal/http/handlers`) reads the key from the escaped path itself instead of using a `ServeMux` pattern.
 `ServeMux` cleans the decoded path and redirects, which would silently change keys such as `a//b`
 or `x/../y`.
 
@@ -122,7 +129,7 @@ added to `Client.Execute` therefore works in both frontends immediately, with no
 
 The storage layer is in the middle of a transition:
 
-- **Today:** `internal/server` constructs `store.New()`, the in-memory map. Data is lost on restart.
+- **Today:** `internal/server` constructs `store.NewStore()`, the in-memory map. Data is lost on restart.
 - **In progress:** `store.DB` is a working LSM engine (WAL, group commit, memtable, SSTable
   flush and point reads, manifest, recovery) with its own tests. Data written to it survives a
   restart or crash. It has not been connected to the server yet.

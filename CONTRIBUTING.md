@@ -25,7 +25,7 @@ everything lives.
 - Breaking changes to the `/v1` HTTP API without a strong reason
 - Premature abstraction (frameworks, plugin systems, heavy interfaces)
 - Drive-by refactors unrelated to the PR's goal
-- Features without a clear place in the architecture (HTTP → store)
+- Features without a clear place in the architecture (HTTP → service → store)
 
 ## Getting started
 
@@ -77,15 +77,17 @@ make run-cli    # terminal 2: interactive client
 | Layer               | Owns                         | Must not own            |
 |---------------------|------------------------------|-------------------------|
 | `cmd/*`             | Wiring `main`                | Business logic          |
-| `internal/server`   | Routes, handlers, status codes | Storage internals     |
+| `internal/server`   | Listening, shutdown          | Routes, storage internals |
+| `internal/http/handlers` | Routes, handlers, status codes | Business rules, storage |
+| `internal/service`  | Key and TTL rules, domain errors | HTTP                |
 | `internal/client`   | HTTP requests, CLI command lines | Storage             |
 | `internal/store`    | Keys, values, TTL, durability| HTTP                    |
 
 To add an operation, follow the walkthrough in [docs/commands.md](docs/commands.md#adding-an-operation).
 In short:
 
-1. Add a route and handler in `internal/server/server.go`.
-2. Mutate and query state only through the store API.
+1. Add a route and handler in `internal/http/handlers/handlers.go`.
+2. Put the rules in `internal/service` and reach the store only through it.
 3. Return the correct HTTP status, and errors as `{"error": "..."}`.
 4. Add the matching `internal/client` method (and a `Client.Execute` case for CLI access).
 5. Update the tables in `docs/commands.md`.

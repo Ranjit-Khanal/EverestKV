@@ -96,10 +96,10 @@ Bye!
 
 ## Adding an operation
 
-1. If it needs new storage behavior, add a method to the store. Handlers never touch the store's
-   internals.
-2. Add the route in `internal/server/server.go` (register it on the mux in `New`, or extend
-   `handleKV` for a new method on a key). Use proper status codes and `writeError` for failures.
+1. Add a method to `internal/service` (and to the store if it needs new storage behavior).
+   Handlers only call the service.
+2. Add the route in `internal/http/handlers/handlers.go` (register it on the mux in `Routes`, or
+   extend `Handlers.KV` for a new method on a key). Use proper status codes and `writeError` for failures.
 3. Add a method to `internal/client` that makes the request, and, if it should be usable from the
    CLI and dashboard console, a case in `Client.Execute`.
 4. Add tests in `internal/server/server_test.go`.

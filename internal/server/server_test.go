@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Ranjit-Khanal/everestkv/internal/client"
+	"github.com/Ranjit-Khanal/everestkv/internal/http/handlers"
 )
 
 // startServer serves on a random local port and returns the server, its
@@ -156,7 +157,7 @@ func TestBadRequests(t *testing.T) {
 		{http.MethodGet, "/v1/kv/", nil, http.StatusBadRequest},
 		{http.MethodGet, "/v1/kv/%zz", nil, http.StatusBadRequest},
 		{http.MethodPost, "/v1/kv/k", nil, http.StatusMethodNotAllowed},
-		{http.MethodPut, "/v1/kv/big", strings.NewReader(strings.Repeat("x", MaxValueBytes+1)), http.StatusRequestEntityTooLarge},
+		{http.MethodPut, "/v1/kv/big", strings.NewReader(strings.Repeat("x", handlers.MaxValueBytes+1)), http.StatusRequestEntityTooLarge},
 		{http.MethodPut, "/v1/kv/k?ttl=0", nil, http.StatusBadRequest},
 		{http.MethodPut, "/v1/kv/k?ttl=-5", nil, http.StatusBadRequest},
 		{http.MethodPut, "/v1/kv/k?ttl=1.5", nil, http.StatusBadRequest},
