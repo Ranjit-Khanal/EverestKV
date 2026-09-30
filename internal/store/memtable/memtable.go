@@ -77,16 +77,13 @@ func (it *Iterator) Next() bool {
 	return true
 }
 
-// Key returns the current entry's key.
 func (it *Iterator) Key() []byte { return it.cur.entry.key }
 
-// Value returns the current entry's value.
 func (it *Iterator) Value() []byte { return it.cur.entry.value }
 
 // Tombstone reports whether the current entry is a delete.
 func (it *Iterator) Tombstone() bool { return it.cur.entry.tombstone }
 
-// Seq returns the current entry's sequence number.
 func (it *Iterator) Seq() uint64 { return it.cur.entry.seq }
 
 func clone(b []byte) []byte {
